@@ -35,6 +35,7 @@ const STATE = {
  * @param {string}   eventId        - ID event aktif untuk validasi
  * @param {boolean}  autoStart      - otomatis mulai kamera (default: true)
  * @param {number}   pauseMs        - jeda (ms) antar scan, mencegah scan ganda (default: 1500)
+ * @param {node}     overlay        - konten opsional ditampilkan di atas viewport kamera (mis. hasil scan)
  */
 export default function QRScannerCamera({
   onScanSuccess,
@@ -42,6 +43,7 @@ export default function QRScannerCamera({
   eventId,
   autoStart = true,
   pauseMs   = 1500,
+  overlay   = null,
 }) {
   const [state, setState]             = useState(STATE.IDLE);
   const [cameras, setCameras]         = useState([]);
@@ -346,6 +348,9 @@ export default function QRScannerCamera({
             </button>
           </div>
         )}
+
+        {/* Overlay hasil scan (dikontrol oleh parent) */}
+        {overlay && <div className="absolute inset-0 z-50">{overlay}</div>}
       </div>
 
       {/* ── Status bar ─────────────────────────────────────────────────── */}

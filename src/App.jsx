@@ -2,9 +2,11 @@ import { useState } from "react";
 import {
   Menu, QrCode, Users, Calendar, BarChart3, LogOut, Plus, Search,
   Printer, CheckCircle, AlertCircle, Home, ScanLine, Download,
-  UserCheck, UserX, ArrowLeft, ArrowRight, Shield, Camera,
+  UserCheck, UserX, ArrowLeft, ArrowRight, Shield,
   RefreshCw, X, Check, Clock, Activity
 } from "lucide-react";
+import { downloadAllIDCards, downloadSingleIDCard } from "./utils/pdfGenerator";
+import QRScannerCamera from "./components/QRScannerCamera";
 
 const MOCK_USER = { name: "Sari Dewi", email: "panitia@sdharapan.sch.id", initials: "SD" };
 
@@ -58,7 +60,7 @@ const Bar = ({ value, max, color="bg-indigo-500" }) => {
 
 const KPI = ({ label, value, sub, bg, ic, icon: Icon }) => (
   <div className="bg-white rounded-2xl p-5 border border-slate-100 shadow-sm">
-    <div className="flex items-center justify-between mb-3">
+    <div className="flex flex-wrap items-start justify-between gap-3 mb-3">
       <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">{label}</p>
       <div className={`w-9 h-9 ${bg} rounded-xl flex items-center justify-center`}><Icon size={16} className={ic}/></div>
     </div>
@@ -66,6 +68,24 @@ const KPI = ({ label, value, sub, bg, ic, icon: Icon }) => (
     {sub && <p className="text-xs text-slate-400 mt-1">{sub}</p>}
   </div>
 );
+
+function Modal({ title, onClose, children }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ background:"rgba(0,0,0,0.6)" }} onClick={onClose}>
+      <div className="bg-white rounded-2xl w-full max-w-md p-6 shadow-xl"
+        onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="font-black text-slate-900 text-lg">{title}</h2>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-700">
+            <X size={20}/>
+          </button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
 
 function Sidebar({ page, setPage, user, onLogout, open, onClose }) {
   const nav = [
@@ -163,21 +183,21 @@ function DashboardPage({ events, participants, attendance, setPage, setSelEvent 
   const pct = aP.length ? Math.round((aA.length/aP.length)*100) : 0;
   const recent = [...attendance].sort((a,b)=>b.waktuScan.localeCompare(a.waktuScan)).slice(0,5);
   return (
-    <div className="p-6 space-y-6 max-w-5xl">
-      <div><h1 className="text-2xl font-black text-slate-900">Dashboard</h1><p className="text-slate-500 text-sm mt-0.5">Selamat datang, pantau aktivitas absensi Anda</p></div>
+    <div className="p-6 space-y-6 max-w-full">
+      <div><h1 className="text-xl font-black text-slate-900">Dashboard</h1><p className="text-slate-500 text-sm mt-0.5">Selamat datang, pantau aktivitas absensi Anda</p></div>
       {active && (
         <div className="relative overflow-hidden rounded-3xl p-6 text-white" style={{background:"linear-gradient(135deg,#4338ca 0%,#6366f1 100%)"}}>
           <div className="absolute -right-6 -top-6 w-40 h-40 rounded-full pointer-events-none" style={{background:"rgba(255,255,255,0.05)"}}/>
           <div className="absolute right-4 bottom-0 w-20 h-20 rounded-full pointer-events-none" style={{background:"rgba(255,255,255,0.04)"}}/>
           <div className="relative">
-            <div className="flex items-start justify-between gap-4">
+            <div className="flex flex-col sm:flex-row items-start justify-between gap-3">
               <div className="flex-1">
                 <span className="text-xs rounded-full px-3 py-1 font-semibold" style={{background:"rgba(255,255,255,0.2)"}}>🟢 Event Sedang Berlangsung</span>
                 <h2 className="text-xl font-black mt-2 leading-tight">{active.name}</h2>
                 <p className="text-sm mt-1" style={{color:"rgba(199,210,254,1)"}}>{fmtDate(active.date)} · 📍 {active.location}</p>
               </div>
               <button onClick={()=>{setSelEvent(active.id);setPage("scanner");}}
-                className="flex-shrink-0 bg-white text-indigo-700 text-sm font-bold px-4 py-2.5 rounded-2xl hover:bg-indigo-50 flex items-center gap-2 transition-colors">
+                className="flex-shrink-0 bg-white text-indigo-700 text-sm font-bold px-3 py-2 rounded-xl hover:bg-indigo-50 flex items-center gap-2 transition-colors">
                 <ScanLine size={16}/> Mulai Scan
               </button>
             </div>
@@ -200,7 +220,7 @@ function DashboardPage({ events, participants, attendance, setPage, setSelEvent 
         <KPI label="Belum Hadir"   value={aP.length-aA.length}   sub="Perlu follow-up"       bg="bg-amber-50"   ic="text-amber-500"   icon={UserX}/>
       </div>
       <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-50">
+        <div className="flex flex-wrap items-start justify-between gap-3 px-5 py-4 border-b border-slate-50">
           <h3 className="font-bold text-slate-900">Scan Terbaru</h3>
           <button onClick={()=>setPage("report")} className="text-indigo-500 text-xs font-semibold flex items-center gap-1 hover:text-indigo-700">Lihat semua <ArrowRight size={12}/></button>
         </div>
@@ -222,18 +242,70 @@ function DashboardPage({ events, participants, attendance, setPage, setSelEvent 
   );
 }
 
-function EventsPage({ events, participants, attendance, setPage, setSelEvent }) {
+function EventsPage({ events, setEvents, participants, attendance, setPage, setSelEvent }) {
+  const [showModal, setShowModal] = useState(false);
+  const [form, setForm]           = useState({ name:"", date:"", location:"" });
+
+  const handleCreate = () => {
+    if (!form.name.trim()) return alert("Nama event wajib diisi");
+    const ev = {
+      id:       "EVT" + Date.now(),
+      name:     form.name,
+      date:     form.date,
+      location: form.location,
+      status:   "upcoming",
+    };
+    setEvents(prev => [...prev, ev]);
+    setForm({ name:"", date:"", location:"" });
+    setShowModal(false);
+  };
+
   return (
-    <div className="p-6 space-y-6 max-w-4xl">
-      <div className="flex items-center justify-between">
-        <div><h1 className="text-2xl font-black text-slate-900">Event</h1><p className="text-slate-500 text-sm mt-0.5">Kelola semua event kegiatan</p></div>
-        <button className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-bold px-4 py-2.5 rounded-2xl transition-colors"><Plus size={16}/>Buat Event Baru</button>
+    <div className="p-6 space-y-6 max-w-full">
+      {showModal && (
+        <Modal title="Buat Event Baru" onClose={() => setShowModal(false)}>
+          <div className="space-y-3">
+            <div>
+              <label className="text-sm font-semibold text-slate-700 block mb-1">Nama Event</label>
+              <input type="text" value={form.name} onChange={e => setForm({...form, name:e.target.value})}
+                placeholder="Contoh: Pentas Seni 2026"
+                className="w-full px-3 py-2.5 text-sm border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-400"/>
+            </div>
+            <div>
+              <label className="text-sm font-semibold text-slate-700 block mb-1">Tanggal</label>
+              <input type="date" value={form.date} onChange={e => setForm({...form, date:e.target.value})}
+                className="w-full px-3 py-2.5 text-sm border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-400"/>
+            </div>
+            <div>
+              <label className="text-sm font-semibold text-slate-700 block mb-1">Lokasi</label>
+              <input type="text" value={form.location} onChange={e => setForm({...form, location:e.target.value})}
+                placeholder="Contoh: Aula Sekolah"
+                className="w-full px-3 py-2.5 text-sm border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-400"/>
+            </div>
+            <button onClick={handleCreate}
+              className="w-full bg-indigo-600 text-white font-bold py-3 rounded-2xl hover:bg-indigo-700 transition-colors">
+              Buat Event
+            </button>
+          </div>
+        </Modal>
+      )}
+
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-black text-slate-900">Event</h1>
+          <p className="text-slate-500 text-sm mt-0.5">Kelola semua event kegiatan</p>
+        </div>
+        <button onClick={() => setShowModal(true)}
+          className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-bold px-4 py-2.5 rounded-2xl transition-colors">
+          <Plus size={16}/> Buat Event Baru
+        </button>
       </div>
+
       <div className="space-y-3">
-        {events.map(ev=>{
-          const evP=participants.filter(p=>p.eventId===ev.id);
-          const evA=attendance.filter(a=>a.eventId===ev.id);
-          const pct=evP.length?Math.round((evA.length/evP.length)*100):0;
+        {events.map(ev => {
+          const evP = participants.filter(p => p.eventId === ev.id);
+          const evA = attendance.filter(a => a.eventId === ev.id);
+          const pct = evP.length ? Math.round((evA.length/evP.length)*100) : 0;
           return (
             <div key={ev.id} className="bg-white rounded-2xl border border-slate-100 p-5 shadow-sm hover:border-indigo-100 hover:shadow-md transition-all">
               <div className="flex items-start justify-between gap-4">
@@ -241,7 +313,7 @@ function EventsPage({ events, participants, attendance, setPage, setSelEvent }) 
                   <div className="flex items-center gap-2 mb-1.5"><Badge status={ev.status}/><span className="text-xs text-slate-400 font-mono">{ev.id}</span></div>
                   <h3 className="font-bold text-slate-900 text-base">{ev.name}</h3>
                   <p className="text-sm text-slate-500 mt-1">{fmtDate(ev.date)} · 📍 {ev.location}</p>
-                  <div className="mt-3 max-w-sm">
+                  <div className="mt-3 w-full">
                     <div className="flex justify-between text-xs text-slate-400 mb-1.5"><span>{evA.length}/{evP.length} hadir</span><span className="font-bold text-slate-600">{pct}%</span></div>
                     <Bar value={evA.length} max={evP.length} color={ev.status==="completed"?"bg-emerald-500":"bg-indigo-500"}/>
                   </div>
@@ -260,30 +332,99 @@ function EventsPage({ events, participants, attendance, setPage, setSelEvent }) 
   );
 }
 
-function ParticipantsPage({ participants, events, selEvent, attendance }) {
-  const [evId, setEvId] = useState(selEvent||events[0]?.id||"");
-  const [q, setQ] = useState("");
-  const evP = participants.filter(p=>p.eventId===evId&&[p.namaAnak,p.namaOrtu,p.kelas,p.divisi].some(v=>v.toLowerCase().includes(q.toLowerCase())));
+function ParticipantsPage({ participants, setParticipants, events, selEvent, attendance }) {
+  const [evId, setEvId]         = useState(selEvent||events[0]?.id||"");
+  const [q, setQ]               = useState("");
+  const [showImport, setShowImport] = useState(false);
+  const [importUrl, setImportUrl]   = useState("");
+  const [importing, setImporting]   = useState(false);
+
+  const evP = participants.filter(p =>
+    p.eventId === evId &&
+    [p.namaAnak,p.namaOrtu,p.kelas,p.divisi].some(v => v.toLowerCase().includes(q.toLowerCase()))
+  );
   const scanned = new Set(attendance.filter(a=>a.eventId===evId).map(a=>a.participantId));
+
+  const handleImport = async () => {
+    if (!importUrl.trim()) return;
+    const match = importUrl.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+    if (!match) { alert("URL tidak valid. Pastikan URL Google Sheets yang benar."); return; }
+    setImporting(true);
+    try {
+      const apiUrl = import.meta.env.VITE_API_URL;
+      const res  = await fetch(apiUrl, {
+        method: "POST",
+        headers: { "Content-Type":"application/json" },
+        body: JSON.stringify({
+          action:          "importPeserta",
+          sourceSheetId:   match[1],
+          sourceSheetName: "Form Responses 1",
+          eventId:         evId,
+        }),
+      });
+      const json = await res.json();
+      if (json.status === "success") {
+        alert("✅ Berhasil import " + json.data.imported + " peserta!\nRefresh halaman untuk melihat data terbaru.");
+        setShowImport(false);
+        setImportUrl("");
+      } else {
+        alert("❌ Gagal: " + (json.data?.message || "Unknown error"));
+      }
+    } catch (err) {
+      alert("❌ Error: " + err.message);
+    } finally {
+      setImporting(false);
+    }
+  };
+
   return (
-    <div className="p-6 space-y-5 max-w-6xl">
-      <div className="flex items-center justify-between">
-        <div><h1 className="text-2xl font-black text-slate-900">Data Peserta</h1><p className="text-slate-500 text-sm mt-0.5">{evP.length} peserta ditemukan</p></div>
-        <button className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-bold px-4 py-2.5 rounded-2xl transition-colors"><Download size={16}/>Import dari Google Sheets</button>
+    <div className="p-6 space-y-5 max-w-full">
+      {showImport && (
+        <Modal title="Import dari Google Sheets" onClose={() => setShowImport(false)}>
+          <div className="space-y-3">
+            <p className="text-sm text-slate-500">Salin URL Google Sheets response Form Anda dan paste di bawah ini.</p>
+            <div>
+              <label className="text-sm font-semibold text-slate-700 block mb-1">URL Google Sheets</label>
+              <textarea value={importUrl} onChange={e => setImportUrl(e.target.value)}
+                placeholder="https://docs.google.com/spreadsheets/d/..."
+                rows={3}
+                className="w-full px-3 py-2.5 text-sm border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-400 resize-none"/>
+            </div>
+            <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-700 flex items-start gap-2">
+              <AlertCircle size={14} className="flex-shrink-0 mt-0.5"/>
+              <span>Pastikan Google Sheets sudah dibagikan: klik <strong>Share → Anyone with the link → Viewer</strong></span>
+            </div>
+            <button onClick={handleImport} disabled={importing || !importUrl.trim()}
+              className="w-full bg-indigo-600 text-white font-bold py-3 rounded-2xl hover:bg-indigo-700 disabled:opacity-50 transition-colors">
+              {importing ? "Mengimport data..." : "Import Peserta"}
+            </button>
+          </div>
+        </Modal>
+      )}
+
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-black text-slate-900">Data Peserta</h1>
+          <p className="text-slate-500 text-sm mt-0.5">{evP.length} peserta ditemukan</p>
+        </div>
+        <button onClick={() => setShowImport(true)}
+          className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-bold px-4 py-2.5 rounded-2xl transition-colors">
+          <Download size={16}/> Import dari Google Sheets
+        </button>
       </div>
-      <div className="bg-blue-50 border border-blue-200 rounded-2xl p-4 flex items-start gap-3">
-        <AlertCircle size={16} className="text-blue-600 flex-shrink-0 mt-0.5"/>
-        <p className="text-sm text-blue-800"><strong>Cara import:</strong> Salin URL Google Sheets response Form Anda → klik Import → data peserta akan dimuat otomatis sebagai database kehadiran.</p>
-      </div>
+
       <div className="flex gap-3">
         <div className="flex-1 relative">
           <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400"/>
-          <input type="text" placeholder="Cari nama anak, orang tua, kelas, divisi..." value={q} onChange={e=>setQ(e.target.value)} className="w-full pl-10 pr-4 py-2.5 text-sm border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-400"/>
+          <input type="text" placeholder="Cari nama anak, orang tua, kelas..." value={q} onChange={e=>setQ(e.target.value)}
+            className="w-full pl-10 pr-4 py-2.5 text-sm border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-400"/>
         </div>
-        <select value={evId} onChange={e=>setEvId(e.target.value)} className="text-sm border border-slate-200 rounded-xl px-3 py-2.5 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-400">
+        <select value={evId} onChange={e=>setEvId(e.target.value)}
+          className="text-sm border border-slate-200 rounded-xl px-3 py-2.5 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-400">
           {events.map(e=><option key={e.id} value={e.id}>{e.name}</option>)}
         </select>
       </div>
+
       <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -324,6 +465,8 @@ function IDCardsPage({ participants, events, selEvent }) {
   const [evId, setEvId] = useState(selEvent||events[0]?.id||"");
   const [preview, setPreview] = useState(null);
   const [hovered, setHovered] = useState(null);
+  const [gen, setGen] = useState(false);
+  const [pct, setPct] = useState(0);
   const ev = events.find(e=>e.id===evId);
   const evP = participants.filter(p=>p.eventId===evId);
 
@@ -332,7 +475,7 @@ function IDCardsPage({ participants, events, selEvent }) {
     const qrSize = large ? 100 : 80;
     return (
       <div className="bg-white rounded-2xl overflow-hidden border border-slate-200 shadow-md">
-        <div className="px-4 py-3 flex items-center justify-between" style={{background:"linear-gradient(90deg,#4338ca,#6366f1)"}}>
+        <div className="px-4 py-3 flex flex-wrap items-start justify-between gap-3" style={{background:"linear-gradient(90deg,#4338ca,#6366f1)"}}>
           <div>
             <p className="text-xs font-bold uppercase tracking-widest" style={{color:"rgba(255,255,255,0.6)"}}>ID Card Peserta</p>
             <p className="text-white font-bold text-sm leading-tight mt-0.5 truncate max-w-xs">{ev?.name||""}</p>
@@ -359,7 +502,7 @@ function IDCardsPage({ participants, events, selEvent }) {
             <p className="text-center text-slate-400 text-xs mt-1 font-mono">{p.id}</p>
           </div>
         </div>
-        <div className="bg-indigo-50 px-4 py-2 flex items-center justify-between">
+        <div className="bg-indigo-50 px-4 py-2 flex flex-wrap items-start justify-between gap-3">
           <p className="text-indigo-500 text-xs truncate">{p.korlas}</p>
           <p className="text-indigo-400 text-xs flex-shrink-0">{fmtDate(ev?.date)}</p>
         </div>
@@ -368,7 +511,7 @@ function IDCardsPage({ participants, events, selEvent }) {
   };
 
   if (preview) return (
-    <div className="p-6 max-w-xl mx-auto space-y-5">
+    <div className="p-6 max-w-full mx-auto space-y-5">
       <div className="flex items-center gap-3">
         <button onClick={()=>setPreview(null)} className="text-slate-500 hover:text-slate-800 p-1"><ArrowLeft size={20}/></button>
         <h1 className="text-xl font-black text-slate-900 flex-1">Preview ID Card</h1>
@@ -383,14 +526,31 @@ function IDCardsPage({ participants, events, selEvent }) {
   );
 
   return (
-    <div className="p-6 space-y-5 max-w-5xl">
-      <div className="flex items-center justify-between">
-        <div><h1 className="text-2xl font-black text-slate-900">ID Card & QR Code</h1><p className="text-slate-500 text-sm mt-0.5">Generate dan cetak kartu identitas peserta</p></div>
+    <div className="p-6 space-y-5 max-w-full">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div><h1 className="text-xl font-black text-slate-900">ID Card & QR Code</h1><p className="text-slate-500 text-sm mt-0.5">Generate dan cetak kartu identitas peserta</p></div>
         <div className="flex gap-2">
           <select value={evId} onChange={e=>setEvId(e.target.value)} className="text-sm border border-slate-200 rounded-xl px-3 py-2.5 bg-white focus:outline-none">
             {events.map(e=><option key={e.id} value={e.id}>{e.name}</option>)}
           </select>
-          <button className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-bold px-4 py-2.5 rounded-2xl"><Printer size={16}/>Cetak Semua</button>
+          <button
+  onClick={async () => {
+    if (!evP.length) { alert("Tidak ada peserta untuk dicetak"); return; }
+    setGen(true);
+    try {
+      await downloadAllIDCards(evP, ev, {
+        onProgress: (c, t) => setPct(Math.round(c / t * 100)),
+      });
+    } catch (err) {
+      alert("Gagal generate PDF: " + err.message);
+    } finally {
+      setGen(false); setPct(0);
+    }
+  }}
+  disabled={gen || !evP.length}
+  className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-bold px-4 py-2.5 rounded-2xl disabled:opacity-50 transition-colors">
+  {gen ? `Generating... ${pct}%` : <><Printer size={16}/> Cetak Semua</>}
+</button>
         </div>
       </div>
       <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 flex items-start gap-3">
@@ -428,7 +588,7 @@ function ScannerPage({ participants, events, attendance, setAttendance, selEvent
   const pct = evP.length ? Math.round((evA.length/evP.length)*100) : 0;
 
   const doScan = (pid) => {
-    const p = evP.find(x=>x.id===pid.toUpperCase());
+    const p = evP.find(x=>x.id===String(pid).toUpperCase());
     if (!p)               { setResult({type:"notfound",p:null}); setTimeout(()=>setResult(null),2800); return; }
     if (scanned.has(p.id)){ setResult({type:"duplicate",p});     setTimeout(()=>setResult(null),2800); return; }
     setAttendance(prev=>[...prev,{participantId:p.id,eventId:evId,waktuScan:new Date().toISOString()}]);
@@ -436,51 +596,52 @@ function ScannerPage({ participants, events, attendance, setAttendance, selEvent
     setTimeout(()=>setResult(null),2800);
   };
 
+  const handleCameraScan = (qrData) => {
+    if (!qrData?.id) { setResult({type:"notfound",p:null}); setTimeout(()=>setResult(null),2800); return; }
+    doScan(qrData.id);
+  };
+
+  const resultOverlay = result && (
+    <div className="absolute inset-0 flex flex-col items-center justify-center" style={{background:result.type==="success"?"rgba(2,44,28,0.96)":result.type==="duplicate"?"rgba(65,36,2,0.96)":"rgba(80,19,19,0.96)"}}>
+      {result.type==="success" && <>
+        <div className="w-16 h-16 bg-emerald-500 rounded-full flex items-center justify-center mb-3"><Check size={32} className="text-white"/></div>
+        <p className="text-white text-2xl font-black tracking-wide">HADIR ✓</p>
+        <p className="text-emerald-300 font-semibold mt-2 text-lg">{result.p?.namaAnak}</p>
+        <p className="text-emerald-500 text-sm">Kelas {result.p?.kelas} · {result.p?.divisi}</p>
+        <p className="text-emerald-600 text-xs mt-3">Data tercatat di Google Sheets ✓</p>
+      </>}
+      {result.type==="duplicate" && <>
+        <div className="w-16 h-16 bg-amber-500 rounded-full flex items-center justify-center mb-3"><AlertCircle size={32} className="text-white"/></div>
+        <p className="text-white text-xl font-black">SUDAH HADIR</p>
+        <p className="text-amber-300 font-semibold mt-2">{result.p?.namaAnak}</p>
+        <p className="text-amber-500 text-sm mt-1">Data kehadiran sudah tercatat sebelumnya</p>
+      </>}
+      {result.type==="notfound" && <>
+        <div className="w-16 h-16 bg-red-500 rounded-full flex items-center justify-center mb-3"><X size={32} className="text-white"/></div>
+        <p className="text-white text-xl font-black">TIDAK DITEMUKAN</p>
+        <p className="text-red-400 text-sm mt-2">Peserta tidak terdaftar pada event ini</p>
+      </>}
+    </div>
+  );
+
   return (
-    <div className="p-6 max-w-5xl">
-      <style>{`@keyframes scanMove{0%,100%{top:12%}50%{top:80%}}.scan-ln{animation:scanMove 2s ease-in-out infinite;position:absolute;left:0;right:0}`}</style>
-      <div className="flex items-center justify-between mb-6">
-        <div><h1 className="text-2xl font-black text-slate-900">Scan Absensi</h1><p className="text-slate-500 text-sm mt-0.5">Arahkan kamera ke QR Code pada kartu peserta</p></div>
+    <div className="p-6 max-w-full">
+      <div className="flex flex-wrap items-start justify-between gap-3 mb-6">
+        <div><h1 className="text-xl font-black text-slate-900">Scan Absensi</h1><p className="text-slate-500 text-sm mt-0.5">Arahkan kamera ke QR Code pada kartu peserta</p></div>
         <select value={evId} onChange={e=>setEvId(e.target.value)} className="text-sm border border-slate-200 rounded-xl px-3 py-2.5 bg-white focus:outline-none">
           {events.map(e=><option key={e.id} value={e.id}>{e.name}</option>)}
         </select>
       </div>
       <div className="grid lg:grid-cols-2 gap-6">
         <div className="space-y-4">
-          <div className="relative bg-slate-900 rounded-3xl overflow-hidden" style={{aspectRatio:"1/1"}}>
-            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-              <div className="relative w-56 h-56">
-                <div className="absolute top-0 left-0  w-8 h-8 border-t-2 border-l-2 border-indigo-400 rounded-tl-xl"/>
-                <div className="absolute top-0 right-0 w-8 h-8 border-t-2 border-r-2 border-indigo-400 rounded-tr-xl"/>
-                <div className="absolute bottom-0 left-0  w-8 h-8 border-b-2 border-l-2 border-indigo-400 rounded-bl-xl"/>
-                <div className="absolute bottom-0 right-0 w-8 h-8 border-b-2 border-r-2 border-indigo-400 rounded-br-xl"/>
-                {!result && <div className="scan-ln h-0.5 bg-indigo-400" style={{boxShadow:"0 0 8px rgba(129,140,248,0.9),0 0 18px rgba(129,140,248,0.4)"}}/>}
-              </div>
-            </div>
-            {!result && <div className="absolute inset-0 flex flex-col items-center justify-center"><Camera size={28} className="text-slate-600 mb-2"/><p className="text-slate-600 text-xs text-center px-12">Kamera aktif di versi produksi</p><p className="text-slate-700 text-xs text-center mt-1">Gunakan tombol demo di bawah</p></div>}
-            {result && (
-              <div className="absolute inset-0 flex flex-col items-center justify-center" style={{background:result.type==="success"?"rgba(2,44,28,0.96)":result.type==="duplicate"?"rgba(65,36,2,0.96)":"rgba(80,19,19,0.96)"}}>
-                {result.type==="success" && <>
-                  <div className="w-16 h-16 bg-emerald-500 rounded-full flex items-center justify-center mb-3"><Check size={32} className="text-white"/></div>
-                  <p className="text-white text-2xl font-black tracking-wide">HADIR ✓</p>
-                  <p className="text-emerald-300 font-semibold mt-2 text-lg">{result.p?.namaAnak}</p>
-                  <p className="text-emerald-500 text-sm">Kelas {result.p?.kelas} · {result.p?.divisi}</p>
-                  <p className="text-emerald-600 text-xs mt-3">Data tercatat di Google Sheets ✓</p>
-                </>}
-                {result.type==="duplicate" && <>
-                  <div className="w-16 h-16 bg-amber-500 rounded-full flex items-center justify-center mb-3"><AlertCircle size={32} className="text-white"/></div>
-                  <p className="text-white text-xl font-black">SUDAH HADIR</p>
-                  <p className="text-amber-300 font-semibold mt-2">{result.p?.namaAnak}</p>
-                  <p className="text-amber-500 text-sm mt-1">Data kehadiran sudah tercatat sebelumnya</p>
-                </>}
-                {result.type==="notfound" && <>
-                  <div className="w-16 h-16 bg-red-500 rounded-full flex items-center justify-center mb-3"><X size={32} className="text-white"/></div>
-                  <p className="text-white text-xl font-black">TIDAK DITEMUKAN</p>
-                  <p className="text-red-400 text-sm mt-2">Peserta tidak terdaftar pada event ini</p>
-                </>}
-              </div>
-            )}
-          </div>
+          <QRScannerCamera
+            eventId={evId}
+            autoStart
+            pauseMs={2800}
+            onScanSuccess={handleCameraScan}
+            onScanError={(msg)=>console.error("[Scanner]", msg)}
+            overlay={resultOverlay}
+          />
           <div className="grid grid-cols-3 gap-3">
             <div className="bg-emerald-50 border border-emerald-100 rounded-2xl p-3 text-center"><p className="text-2xl font-black text-emerald-700">{evA.length}</p><p className="text-xs text-emerald-600 font-semibold">Hadir</p></div>
             <div className="bg-slate-50 border border-slate-100 rounded-2xl p-3 text-center"><p className="text-2xl font-black text-slate-600">{evP.length-evA.length}</p><p className="text-xs text-slate-500 font-semibold">Belum</p></div>
@@ -563,14 +724,39 @@ function ReportPage({ participants, events, attendance }) {
   const byDiv = evP.reduce((acc,p)=>{if(!acc[p.divisi])acc[p.divisi]={t:0,h:0};acc[p.divisi].t++;if(scanned.has(p.id))acc[p.divisi].h++;return acc;},{});
   const byKelas = evP.reduce((acc,p)=>{if(!acc[p.kelas])acc[p.kelas]={t:0,h:0};acc[p.kelas].t++;if(scanned.has(p.id))acc[p.kelas].h++;return acc;},{});
   return (
-    <div className="p-6 space-y-6 max-w-5xl">
-      <div className="flex items-center justify-between">
-        <div><h1 className="text-2xl font-black text-slate-900">Laporan Kehadiran</h1><p className="text-slate-500 text-sm mt-0.5">Rekap data kehadiran peserta event</p></div>
+    <div className="p-6 space-y-6 max-w-full">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div><h1 className="text-xl font-black text-slate-900">Laporan Kehadiran</h1><p className="text-slate-500 text-sm mt-0.5">Rekap data kehadiran peserta event</p></div>
         <div className="flex gap-2">
           <select value={evId} onChange={e=>setEvId(e.target.value)} className="text-sm border border-slate-200 rounded-xl px-3 py-2.5 bg-white focus:outline-none">
             {events.map(e=><option key={e.id} value={e.id}>{e.name}</option>)}
           </select>
-          <button className="flex items-center gap-2 border border-slate-200 text-slate-700 text-sm font-semibold px-4 py-2.5 rounded-2xl hover:bg-slate-50 transition-colors"><Download size={16}/>Export ke Sheets</button>
+          <button
+  onClick={() => {
+    const headers = ["Nama Anak","Nama Orang Tua","Kelas","Korlas","Divisi","No. HP","Waktu Hadir","Status"];
+    const rows = evP.map(p => {
+      const s = evA.find(a => a.participantId === p.id);
+      return [
+        p.namaAnak, p.namaOrtu, p.kelas, p.korlas,
+        p.divisi, p.hp,
+        s ? fmtTime(s.waktuScan) : "-",
+        s ? "Hadir" : "Tidak Hadir",
+      ];
+    });
+    const csv  = [headers, ...rows].map(r => r.map(v => `"${v}"`).join(",")).join("\n");
+    const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement("a");
+    a.href     = url;
+    a.download = `Absensi-${(events.find(e=>e.id===evId)?.name||"Event").replace(/[^a-z0-9]/gi,"_")}-${new Date().toLocaleDateString("id-ID").replace(/\//g,"-")}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }}
+  className="flex items-center gap-2 border border-slate-200 text-slate-700 text-sm font-semibold px-4 py-2.5 rounded-2xl hover:bg-slate-50 transition-colors">
+  <Download size={16}/> Export CSV
+</button>
         </div>
       </div>
       <div className="grid grid-cols-3 gap-4">
@@ -595,7 +781,7 @@ function ReportPage({ participants, events, attendance }) {
         </div>
       </div>
       <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-50">
+        <div className="flex flex-wrap items-start justify-between gap-3 px-5 py-4 border-b border-slate-50">
           <h3 className="font-bold text-slate-900">Daftar Lengkap Peserta</h3>
           <div className="flex gap-1 bg-slate-100 rounded-xl p-1">
             {[["all",`Semua (${evP.length})`],["hadir",`Hadir (${evA.length})`],["belum",`Tidak Hadir (${evP.length-evA.length})`]].map(([v,l])=>(
@@ -636,15 +822,17 @@ function ReportPage({ participants, events, attendance }) {
 }
 
 export default function App() {
-  const [loggedIn, setLoggedIn] = useState(false);
-  const [page, setPage] = useState("dashboard");
-  const [selEvent, setSelEvent] = useState("EVT001");
-  const [attendance, setAttendance] = useState(INIT_ATTENDANCE);
+  const [loggedIn, setLoggedIn]       = useState(false);
+  const [page, setPage]               = useState("dashboard");
+  const [selEvent, setSelEvent]       = useState("EVT001");
+  const [attendance, setAttendance]   = useState(INIT_ATTENDANCE);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [events, setEvents]           = useState(INIT_EVENTS);
+  const [participants, setParticipants] = useState(INIT_PARTICIPANTS);
 
   if (!loggedIn) return <LoginPage onLogin={()=>setLoggedIn(true)}/>;
 
-  const shared = { participants:INIT_PARTICIPANTS, events:INIT_EVENTS, attendance, setPage };
+  const shared = { participants, setParticipants, events, setEvents, attendance, setPage };
   const pages = {
     dashboard:    <DashboardPage    {...shared} setSelEvent={setSelEvent}/>,
     events:       <EventsPage       {...shared} setSelEvent={setSelEvent}/>,
