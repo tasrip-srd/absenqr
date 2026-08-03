@@ -1,0 +1,221 @@
+/**
+ * sheetsAPI.js — Client API untuk Google Apps Script Backend
+ * AbsenQR Production Utility
+ *
+ * CARA PAKAI:
+ *   import { SheetsAPI } from "./sheetsAPI";
+ *   const api = new SheetsAPI(import.meta.env.VITE_API_URL);
+ *   const { participants } = await api.getParticipants("EVT001");
+ */
+
+// ─── Base request ─────────────────────────────────────────────────────────────
+async function request(url, params = {}, method = "GET", body = null) {
+  const fullUrl = method === "GET"
+    ? url + "?" + new URLSearchParams(params).toString()
+    : url;
+
+  const opts = {
+    method,
+    headers: { "Content-Type": "application/json" },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  };
+
+  const res = await fetch(fullUrl, opts);
+  if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+
+  const json = await res.json();
+  if (json.status === "error") throw new Error(json.data?.message || "API error");
+  return json.data;
+}
+
+// ─── SheetsAPI class ─────────────────────────────────────────────────────────
+export class SheetsAPI {
+  /**
+   * @param {string} baseUrl - URL Web App dari Google Apps Script
+   */
+  constructor(baseUrl) {
+    if (!baseUrl) throw new Error("baseUrl diperlukan. Isi VITE_API_URL di file .env");
+    this.url = baseUrl;
+  }
+
+  // ── Cek koneksi ─────────────────────────────────────────────────────────
+  async ping() {
+    return request(this.url, { action: "ping" });
+  }
+
+  // ── Ambil daftar event ──────────────────────────────────────────────────
+  async getEvents() {
+    const data = await request(this.url, { action: "getEvents" });
+    return data.events || [];
+  }
+
+  // ── Buat event baru ─────────────────────────────────────────────────────
+  async createEvent({ name, date, location }) {
+    if (!name) throw new Error("Nama event wajib diisi");
+    return request(this.url, {}, "POST", { action: "createEvent", name, date, location });
+  }
+
+  // ── Update status event ─────────────────────────────────────────────────
+  async updateEventStatus(eventId, status) {
+    return request(this.url, {}, "POST", { action: "updateEvent", eventId, status });
+  }
+
+  // ── Ambil daftar peserta ────────────────────────────────────────────────
+  async getParticipants(eventId) {
+    const data = await request(this.url, { action: "getParticipants", eventId });
+    return { participants: data.participants || [], total: data.total || 0 };
+  }
+
+  // ── Catat kehadiran (dari scan QR) ─────────────────────────────────────
+  /**
+   * @param {object} qrData - Data hasil parse QR Code
+   *   { id, event_id, nama_ortu, nama_anak, kelas, korlas, divisi, hp }
+   * @param {string} overrideEventId - Gunakan eventId ini jika qrData tidak punya event_id
+   * @returns {{ success, duplicate, message, waktuScan }}
+   */
+  async recordAttendance(qrData, overrideEventId) {
+    const payload = {
+      action:        "recordAttendance",
+      participantId: qrData.id,
+      eventId:       qrData.event_id || overrideEventId,
+      namaAnak:      qrData.nama_anak  || qrData.namaAnak  || "",
+      namaOrtu:      qrData.nama_ortu  || qrData.namaOrtu  || "",
+      kelas:         qrData.kelas      || "",
+      korlas:        qrData.korlas     || "",
+      divisi:        qrData.divisi     || "",
+      hp:            qrData.hp         || "",
+    };
+
+    if (!payload.participantId) throw new Error("ID peserta tidak ditemukan di QR Code");
+    if (!payload.eventId)       throw new Error("Event ID tidak ditemukan");
+
+    return request(this.url, {}, "POST", payload);
+  }
+
+  // ── Ambil data kehadiran ────────────────────────────────────────────────
+  async getAttendance(eventId) {
+    const data = await request(this.url, { action: "getAttendance", eventId });
+    return { attendance: data.attendance || [], total: data.total || 0 };
+  }
+
+  // ── Ambil statistik kehadiran ───────────────────────────────────────────
+  async getStats(eventId) {
+    return request(this.url, { action: "getStats", eventId });
+  }
+
+  // ── Import peserta dari Sheets lain ────────────────────────────────────
+  async importPeserta({ sourceSheetId, sourceSheetName, eventId }) {
+    return request(this.url, {}, "POST", {
+      action: "importPeserta",
+      sourceSheetId, sourceSheetName, eventId,
+    });
+  }
+}
+
+// ─── Singleton helper ─────────────────────────────────────────────────────────
+let _instance = null;
+
+/**
+ * Dapatkan instance SheetsAPI (singleton).
+ * URL diambil dari environment variable VITE_API_URL.
+ */
+export function getAPI() {
+  if (!_instance) {
+    const url = import.meta.env?.VITE_API_URL;
+    if (!url) {
+      throw new Error(
+        "VITE_API_URL belum diatur.\n" +
+        "Buat file .env di root project:\n" +
+        "  VITE_API_URL=https://script.google.com/macros/s/YOUR_ID/exec"
+      );
+    }
+    _instance = new SheetsAPI(url);
+  }
+  return _instance;
+}
+
+// ─── useSheets Hook (React) ───────────────────────────────────────────────────
+/**
+ * React hook untuk menggunakan SheetsAPI dengan loading/error state.
+ *
+ * Contoh:
+ *   const { data, loading, error, execute } = useSheets(api => api.getParticipants("EVT001"));
+ */
+export function useSheets(apiFn, deps = []) {
+  // Import useState & useEffect dari React jika digunakan sebagai hook
+  // Pastikan React sudah diimport di file yang menggunakan ini:
+  //   import { useState, useEffect } from "react";
+  //   import { useSheets } from "./sheetsAPI";
+  const { useState, useEffect, useCallback } = window.React || {};
+
+  if (!useState) {
+    throw new Error("useSheets hanya bisa digunakan dalam komponen React");
+  }
+
+  const [data,    setData]    = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error,   setError]   = useState(null);
+
+  const execute = useCallback(async (...args) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const api    = getAPI();
+      const result = await apiFn(api, ...args);
+      setData(result);
+      return result;
+    } catch (err) {
+      setError(err.message);
+      throw err;
+    } finally {
+      setLoading(false);
+    }
+  }, deps); // eslint-disable-line
+
+  useEffect(() => { execute(); }, []); // eslint-disable-line
+
+  return { data, loading, error, execute, refetch: execute };
+}
+
+// ─── Contoh penggunaan lengkap ────────────────────────────────────────────────
+/*
+
+// 1. Setup di .env:
+//    VITE_API_URL=https://script.google.com/macros/s/ABC123/exec
+
+// 2. Di komponen ScannerPage:
+
+import { getAPI } from "./sheetsAPI";
+
+async function handleScan(qrData) {
+  try {
+    const api    = getAPI();
+    const result = await api.recordAttendance(qrData, currentEventId);
+
+    if (result.duplicate) {
+      showAlert("⚠️ Sudah Hadir", result.message);
+    } else if (result.success) {
+      showAlert("✅ Hadir Tercatat", result.message);
+    }
+  } catch (err) {
+    showAlert("❌ Error", err.message);
+  }
+}
+
+// 3. Di komponen ParticipantsPage untuk import dari Form:
+
+async function handleImport(googleSheetsUrl) {
+  // Extract spreadsheet ID dari URL
+  const match = googleSheetsUrl.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+  if (!match) { alert("URL tidak valid"); return; }
+
+  const api    = getAPI();
+  const result = await api.importPeserta({
+    sourceSheetId:   match[1],
+    sourceSheetName: "Form Responses 1", // nama sheet response Form
+    eventId:         currentEventId,
+  });
+  alert(`Berhasil import ${result.imported} peserta`);
+}
+
+*/
