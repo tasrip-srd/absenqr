@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   Menu, QrCode, Users, Calendar, BarChart3, LogOut, Plus, Search,
   Printer, CheckCircle, AlertCircle, Home, ScanLine, Download,
@@ -8,34 +8,9 @@ import {
 import { downloadAllIDCards, downloadSingleIDCard } from "./utils/pdfGenerator";
 import { playSuccessSound, playDuplicateSound, playErrorSound } from "./utils/scanSounds";
 import QRScannerCamera from "./components/QRScannerCamera";
+import { getAPI } from "./utils/sheetsAPI";
 
 const MOCK_USER = { name: "Sari Dewi", email: "panitia@sdharapan.sch.id", initials: "SD" };
-
-const INIT_EVENTS = [
-  { id: "EVT001", name: "Pentas Seni Akhir Tahun 2025", date: "2025-08-10", location: "Aula SD Harapan Bangsa", status: "active" },
-  { id: "EVT002", name: "Rapat Wali Murid Semester 2",  date: "2025-07-20", location: "Ruang Rapat",            status: "completed" },
-  { id: "EVT003", name: "Workshop Parenting 2025",      date: "2025-09-15", location: "Gedung Serba Guna",      status: "upcoming" },
-];
-
-// Peserta bersifat global — satu identitas permanen, tidak terikat event manapun.
-const INIT_PARTICIPANTS = [
-  { id:"PST001", namaOrtu:"Budi Santoso",    namaAnak:"Andi Budi Santoso",     kelas:"5A", korlas:"Ibu Dewi Rahayu",    divisi:"Divisi Seni",     hp:"081234567890" },
-  { id:"PST002", namaOrtu:"Siti Nurhaliza",  namaAnak:"Bintang Cahya Pertiwi", kelas:"4B", korlas:"Pak Agus Setiawan",  divisi:"Divisi Dekorasi", hp:"082345678901" },
-  { id:"PST003", namaOrtu:"Ahmad Fauzi",     namaAnak:"Rizki Ahmad Hidayat",   kelas:"6A", korlas:"Ibu Rini Wulandari", divisi:"Divisi Konsumsi", hp:"083456789012" },
-  { id:"PST004", namaOrtu:"Dewi Kartika",    namaAnak:"Putri Dewi Lestari",    kelas:"5B", korlas:"Ibu Dewi Rahayu",    divisi:"Divisi Seni",     hp:"084567890123" },
-  { id:"PST005", namaOrtu:"Roni Hakim",      namaAnak:"Farhan Roni Maulana",   kelas:"3A", korlas:"Pak Hendra Gunawan", divisi:"Divisi Dekorasi", hp:"085678901234" },
-  { id:"PST006", namaOrtu:"Hendra Wijaya",   namaAnak:"Dani Hendra Wijaya",    kelas:"4A", korlas:"Pak Hendra Gunawan", divisi:"-",               hp:"086789012345" },
-  { id:"PST007", namaOrtu:"Rina Susanti",    namaAnak:"Luna Rina Cantika",     kelas:"2B", korlas:"Ibu Yani Suryani",   divisi:"-",               hp:"087890123456" },
-  { id:"PST008", namaOrtu:"Joko Susilo",     namaAnak:"Bagas Joko Pratama",    kelas:"1A", korlas:"Ibu Mira Sari",      divisi:"-",               hp:"088901234567" },
-];
-
-const INIT_ATTENDANCE = [
-  { participantId:"PST001", eventId:"EVT001", waktuScan:"2025-08-10T08:15:32" },
-  { participantId:"PST002", eventId:"EVT001", waktuScan:"2025-08-10T08:22:10" },
-  { participantId:"PST004", eventId:"EVT001", waktuScan:"2025-08-10T09:01:05" },
-  { participantId:"PST006", eventId:"EVT002", waktuScan:"2025-07-20T09:00:00" },
-  { participantId:"PST007", eventId:"EVT002", waktuScan:"2025-07-20T09:05:00" },
-];
 
 const fmtDate = (s) => s ? new Date(s + (s.length===10?"T00:00:00":"")).toLocaleDateString("id-ID",{day:"numeric",month:"long",year:"numeric"}) : "-";
 const fmtTime = (s) => s ? new Date(s).toLocaleTimeString("id-ID",{hour:"2-digit",minute:"2-digit",second:"2-digit"}) : "-";
@@ -244,22 +219,27 @@ function DashboardPage({ events, participants, attendance, setPage, setSelEvent 
   );
 }
 
-function EventsPage({ events, setEvents, participants, attendance, setPage, setSelEvent }) {
+function EventsPage({ events, participants, attendance, setPage, setSelEvent, reload }) {
   const [showModal, setShowModal] = useState(false);
   const [form, setForm]           = useState({ name:"", date:"", location:"" });
+  const [creating, setCreating]   = useState(false);
+  const [createErr, setCreateErr] = useState("");
 
-  const handleCreate = () => {
+  const handleCreate = async () => {
     if (!form.name.trim()) return alert("Nama event wajib diisi");
-    const ev = {
-      id:       "EVT" + Date.now(),
-      name:     form.name,
-      date:     form.date,
-      location: form.location,
-      status:   "upcoming",
-    };
-    setEvents(prev => [...prev, ev]);
-    setForm({ name:"", date:"", location:"" });
-    setShowModal(false);
+    setCreating(true);
+    setCreateErr("");
+    try {
+      const api = getAPI();
+      await api.createEvent({ name: form.name, date: form.date, location: form.location });
+      await reload();
+      setForm({ name:"", date:"", location:"" });
+      setShowModal(false);
+    } catch (err) {
+      setCreateErr(err.message);
+    } finally {
+      setCreating(false);
+    }
   };
 
   return (
@@ -284,9 +264,10 @@ function EventsPage({ events, setEvents, participants, attendance, setPage, setS
                 placeholder="Contoh: Aula Sekolah"
                 className="w-full px-3 py-2.5 text-sm border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-400"/>
             </div>
-            <button onClick={handleCreate}
-              className="w-full bg-indigo-600 text-white font-bold py-3 rounded-2xl hover:bg-indigo-700 transition-colors">
-              Buat Event
+            {createErr && <p className="text-xs text-red-600 font-semibold">{createErr}</p>}
+            <button onClick={handleCreate} disabled={creating}
+              className="w-full bg-indigo-600 text-white font-bold py-3 rounded-2xl hover:bg-indigo-700 disabled:opacity-50 transition-colors">
+              {creating ? "Menyimpan..." : "Buat Event"}
             </button>
           </div>
         </Modal>
@@ -334,7 +315,7 @@ function EventsPage({ events, setEvents, participants, attendance, setPage, setS
   );
 }
 
-function ParticipantsPage({ participants, setParticipants, events, selEvent, attendance }) {
+function ParticipantsPage({ participants, events, selEvent, attendance, reload }) {
   const [evId, setEvId]         = useState(selEvent||events[0]?.id||"");
   const [q, setQ]               = useState("");
   const [showImport, setShowImport] = useState(false);
@@ -353,24 +334,15 @@ function ParticipantsPage({ participants, setParticipants, events, selEvent, att
     if (!match) { alert("URL tidak valid. Pastikan URL Google Sheets yang benar."); return; }
     setImporting(true);
     try {
-      const apiUrl = import.meta.env.VITE_API_URL;
-      const res  = await fetch(apiUrl, {
-        method: "POST",
-        headers: { "Content-Type":"application/json" },
-        body: JSON.stringify({
-          action:          "importPeserta",
-          sourceSheetId:   match[1],
-          sourceSheetName: "Form Responses 1",
-        }),
+      const api = getAPI();
+      const result = await api.importPeserta({
+        sourceSheetId:   match[1],
+        sourceSheetName: "Form Responses 1",
       });
-      const json = await res.json();
-      if (json.status === "success") {
-        alert("✅ Berhasil import " + json.data.imported + " peserta!\nRefresh halaman untuk melihat data terbaru.");
-        setShowImport(false);
-        setImportUrl("");
-      } else {
-        alert("❌ Gagal: " + (json.data?.message || "Unknown error"));
-      }
+      await reload();
+      alert("✅ Berhasil import " + result.imported + " peserta!");
+      setShowImport(false);
+      setImportUrl("");
     } catch (err) {
       alert("❌ Error: " + err.message);
     } finally {
@@ -577,21 +549,43 @@ function ScannerPage({ participants, events, attendance, setAttendance, selEvent
   const [evId, setEvId] = useState(selEvent||events.find(e=>e.status==="active")?.id||events[0]?.id||"");
   const [result, setResult] = useState(null);
   const [manualId, setManualId] = useState("");
+  const [busy, setBusy] = useState(false);
 
   const evP = participants; // peserta global — siapa saja bisa check-in ke event manapun
   const evA = attendance.filter(a=>a.eventId===evId);
   const scanned = new Set(evA.map(a=>a.participantId));
   const pct = evP.length ? Math.round((evA.length/evP.length)*100) : 0;
 
-  const doScan = (pid) => {
+  const doScan = async (pid) => {
+    if (busy) return;
+    if (!evId) { playErrorSound(); setResult({type:"error",p:null,message:"Belum ada event dipilih. Buat/pilih event dulu."}); setTimeout(()=>setResult(null),2800); return; }
     // Peserta dicari lintas semua event — QR Code bersifat generik dan bisa dipakai di event manapun
     const p = participants.find(x=>x.id===String(pid).toUpperCase());
     if (!p)               { playErrorSound();     setResult({type:"notfound",p:null}); setTimeout(()=>setResult(null),2800); return; }
     if (scanned.has(p.id)){ playDuplicateSound();  setResult({type:"duplicate",p});     setTimeout(()=>setResult(null),2800); return; }
-    setAttendance(prev=>[...prev,{participantId:p.id,eventId:evId,waktuScan:new Date().toISOString()}]);
-    playSuccessSound();
-    setResult({type:"success",p});
-    setTimeout(()=>setResult(null),2800);
+
+    setBusy(true);
+    try {
+      const api = getAPI();
+      const res = await api.recordAttendance(
+        { id:p.id, namaAnak:p.namaAnak, namaOrtu:p.namaOrtu, kelas:p.kelas, korlas:p.korlas, divisi:p.divisi, hp:p.hp },
+        evId
+      );
+      if (res.duplicate) {
+        playDuplicateSound();
+        setResult({type:"duplicate",p});
+      } else {
+        setAttendance(prev=>[...prev,{participantId:p.id,eventId:evId,waktuScan:res.waktuScan||new Date().toISOString()}]);
+        playSuccessSound();
+        setResult({type:"success",p});
+      }
+    } catch (err) {
+      playErrorSound();
+      setResult({type:"error",p,message:err.message});
+    } finally {
+      setBusy(false);
+      setTimeout(()=>setResult(null),2800);
+    }
   };
 
   const handleCameraScan = (qrData) => {
@@ -618,6 +612,12 @@ function ScannerPage({ participants, events, attendance, setAttendance, selEvent
         <div className="w-16 h-16 bg-red-500 rounded-full flex items-center justify-center mb-3"><X size={32} className="text-white"/></div>
         <p className="text-white text-xl font-black">TIDAK DITEMUKAN</p>
         <p className="text-red-400 text-sm mt-2">Peserta tidak terdaftar pada event ini</p>
+      </>}
+      {result.type==="error" && <>
+        <div className="w-16 h-16 bg-red-500 rounded-full flex items-center justify-center mb-3"><AlertCircle size={32} className="text-white"/></div>
+        <p className="text-white text-xl font-black">GAGAL MENCATAT</p>
+        {result.p?.namaAnak && <p className="text-red-300 font-semibold mt-2">{result.p.namaAnak}</p>}
+        <p className="text-red-400 text-sm mt-2 px-6 text-center">{result.message||"Gagal terhubung ke Google Sheets"}</p>
       </>}
     </div>
   );
@@ -818,18 +818,73 @@ function ReportPage({ participants, events, attendance }) {
   );
 }
 
+function LoadingScreen() {
+  return (
+    <div className="h-screen flex flex-col items-center justify-center bg-slate-50">
+      <div className="w-10 h-10 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin mb-4"/>
+      <p className="text-slate-500 text-sm font-semibold">Memuat data dari Google Sheets...</p>
+    </div>
+  );
+}
+
+function ErrorScreen({ message, onRetry }) {
+  return (
+    <div className="h-screen flex flex-col items-center justify-center bg-slate-50 p-6 text-center">
+      <div className="w-14 h-14 bg-red-100 rounded-full flex items-center justify-center mb-4">
+        <AlertCircle size={26} className="text-red-500"/>
+      </div>
+      <h2 className="font-black text-slate-900 text-lg mb-1">Gagal memuat data</h2>
+      <p className="text-slate-500 text-sm max-w-sm mb-5 whitespace-pre-line">{message}</p>
+      <button onClick={onRetry}
+        className="flex items-center gap-2 bg-indigo-600 text-white font-bold px-5 py-2.5 rounded-2xl hover:bg-indigo-700 transition-colors">
+        <RefreshCw size={16}/> Coba Lagi
+      </button>
+    </div>
+  );
+}
+
 export default function App() {
   const [loggedIn, setLoggedIn]       = useState(false);
   const [page, setPage]               = useState("dashboard");
-  const [selEvent, setSelEvent]       = useState("EVT001");
-  const [attendance, setAttendance]   = useState(INIT_ATTENDANCE);
+  const [selEvent, setSelEvent]       = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [events, setEvents]           = useState(INIT_EVENTS);
-  const [participants, setParticipants] = useState(INIT_PARTICIPANTS);
+
+  const [events, setEvents]             = useState([]);
+  const [participants, setParticipants] = useState([]);
+  const [attendance, setAttendance]     = useState([]);
+  const [loading, setLoading]           = useState(true);
+  const [loadError, setLoadError]       = useState(null);
+
+  // Muat data nyata dari Google Sheets (via Apps Script backend) — sumber kebenaran tunggal,
+  // jadi data tidak hilang saat refresh karena tidak lagi disimpan hanya di memori React.
+  const loadAll = async () => {
+    setLoading(true);
+    setLoadError(null);
+    try {
+      const api = getAPI();
+      const [ev, pt, at] = await Promise.all([
+        api.getEvents(),
+        api.getParticipants(),
+        api.getAttendance(),
+      ]);
+      setEvents(ev);
+      setParticipants(pt.participants);
+      setAttendance(at.attendance);
+      setSelEvent(prev => prev || ev.find(e=>e.status==="active")?.id || ev[0]?.id || "");
+    } catch (err) {
+      setLoadError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { if (loggedIn) loadAll(); }, [loggedIn]); // eslint-disable-line
 
   if (!loggedIn) return <LoginPage onLogin={()=>setLoggedIn(true)}/>;
+  if (loading)   return <LoadingScreen/>;
+  if (loadError) return <ErrorScreen message={loadError} onRetry={loadAll}/>;
 
-  const shared = { participants, setParticipants, events, setEvents, attendance, setPage };
+  const shared = { participants, events, attendance, setPage, reload: loadAll };
   const pages = {
     dashboard:    <DashboardPage    {...shared} setSelEvent={setSelEvent}/>,
     events:       <EventsPage       {...shared} setSelEvent={setSelEvent}/>,

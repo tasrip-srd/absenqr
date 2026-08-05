@@ -10,14 +10,23 @@
 
 // ─── Base request ─────────────────────────────────────────────────────────────
 async function request(url, params = {}, method = "GET", body = null) {
+  // URLSearchParams menstringkan `undefined`/`null` jadi teks literal "undefined" —
+  // buang dulu key yang kosong supaya param opsional (mis. eventId) benar-benar tidak terkirim.
+  const cleanParams = Object.fromEntries(
+    Object.entries(params).filter(([, v]) => v !== undefined && v !== null)
+  );
   const fullUrl = method === "GET"
-    ? url + "?" + new URLSearchParams(params).toString()
+    ? url + "?" + new URLSearchParams(cleanParams).toString()
     : url;
 
   const opts = {
     method,
-    headers: { "Content-Type": "application/json" },
-    ...(body ? { body: JSON.stringify(body) } : {}),
+    // Apps Script Web App tidak menangani preflight OPTIONS (balas 405), jadi header
+    // apapun di GET atau "Content-Type: application/json" di POST akan membuat browser
+    // mengirim preflight dan request aslinya gagal ("Failed to fetch"). "text/plain" ada
+    // di CORS safelist sehingga tidak memicu preflight — Apps Script tetap bisa
+    // JSON.parse(e.postData.contents) di sisi server seperti biasa.
+    ...(body ? { headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify(body) } : {}),
   };
 
   const res = await fetch(fullUrl, opts);
