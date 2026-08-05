@@ -30,9 +30,8 @@ const STATE = {
 
 /**
  * QRScannerCamera
- * @param {function} onScanSuccess  - dipanggil dengan objek data QR { id, event_id, nama_anak, ... }
+ * @param {function} onScanSuccess  - dipanggil dengan objek data QR { id, nama_anak, ... } — QR bersifat generik, tidak terikat event tertentu
  * @param {function} onScanError    - dipanggil dengan string pesan error
- * @param {string}   eventId        - ID event aktif untuk validasi
  * @param {boolean}  autoStart      - otomatis mulai kamera (default: true)
  * @param {number}   pauseMs        - jeda (ms) antar scan, mencegah scan ganda (default: 1500)
  * @param {node}     overlay        - konten opsional ditampilkan di atas viewport kamera (mis. hasil scan)
@@ -40,7 +39,6 @@ const STATE = {
 export default function QRScannerCamera({
   onScanSuccess,
   onScanError,
-  eventId,
   autoStart = true,
   pauseMs   = 1500,
   overlay   = null,
@@ -185,16 +183,7 @@ export default function QRScannerCamera({
       return;
     }
 
-    // Validasi event
-    if (eventId && data.event_id && data.event_id !== eventId) {
-      const msg = `QR Code ini untuk event lain (${data.event_id}). Event aktif: ${eventId}`;
-      setErrorMsg(msg);
-      onScanError?.(msg);
-      resumeAfterDelay(2500);
-      return;
-    }
-
-    // ✅ Data valid → kirim ke parent
+    // ✅ Data valid → kirim ke parent (kehadiran dicatat ke event yang sedang aktif di scanner)
     setErrorMsg(null);
     onScanSuccess(data);
     resumeAfterDelay(pauseMs);

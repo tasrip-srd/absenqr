@@ -4,14 +4,16 @@
  *
  * INSTALL: npm install jspdf qrcode
  *
+ * Kartu bersifat permanen & global — tidak terikat event tertentu, cukup dicetak sekali.
+ *
  * CARA PAKAI di IDCardsPage:
  *   import { downloadAllIDCards, downloadSingleIDCard } from "./pdfGenerator";
  *
  *   // Download semua kartu (1 PDF multi-halaman)
- *   await downloadAllIDCards(participants, event, { onProgress: (cur, tot) => setProgress(cur/tot*100) });
+ *   await downloadAllIDCards(participants, { onProgress: (cur, tot) => setProgress(cur/tot*100) });
  *
  *   // Download satu kartu
- *   await downloadSingleIDCard(participant, event);
+ *   await downloadSingleIDCard(participant);
  */
 
 import { jsPDF }  from "jspdf";
@@ -54,7 +56,7 @@ async function buildQR(data) {
 }
 
 // ─── Gambar satu ID Card di halaman PDF ──────────────────────────────────────
-async function drawCard(doc, p, event, ox, oy) {
+async function drawCard(doc, p, ox, oy) {
   const { W, H, R, P, HDR, FTR, QR } = C;
 
   // Bayangan tipis (simulasi dengan persegi abu-abu offset)
@@ -73,19 +75,19 @@ async function drawCard(doc, p, event, ox, oy) {
   doc.setFont("helvetica", "normal");
   doc.setFontSize(5);
   doc.setTextColor(...K.hdrLbl);
-  doc.text("✦  ID CARD PESERTA  ✦", ox + P, oy + 4.5);
+  doc.text("✦  KARTU PESERTA TETAP  ✦", ox + P, oy + 4.5);
 
   doc.setFont("helvetica", "bold");
   doc.setFontSize(6.5);
   doc.setTextColor(...K.hdrText);
-  doc.text(trunc(event?.name || "Event", 42), ox + P, oy + 10.5);
+  doc.text("Berlaku untuk semua event", ox + P, oy + 10.5);
 
   // ── QR Code ──────────────────────────────────────────────────────────────
   const qrX = ox + W - QR - P;
   const qrY = oy + HDR + 1.5;
 
   const qrImg = await buildQR({
-    id:        p.id,       event_id: p.eventId || event?.id,
+    id:        p.id,
     nama_ortu: p.namaOrtu, nama_anak: p.namaAnak,
     kelas:     p.kelas,    korlas:    p.korlas,
     divisi:    p.divisi,   hp:        p.hp,
@@ -188,18 +190,13 @@ async function drawCard(doc, p, event, ox, oy) {
   // HP kiri
   doc.text(p.hp || "", ox + P, fy + 4.2);
 
-  // Tanggal kanan
-  if (event?.date) {
-    const d = new Date(event.date + "T00:00:00");
-    const dateStr = d.toLocaleDateString("id-ID", { day: "numeric", month: "short", year: "numeric" });
-    doc.text(dateStr, ox + W - P, fy + 4.2, { align: "right" });
-  }
+  // Label kanan
+  doc.text("ID Permanen", ox + W - P, fy + 4.2, { align: "right" });
 }
 
 // ─── EXPORT: Download semua kartu sebagai 1 PDF ───────────────────────────────
 /**
- * @param {Array}    participants  - Array peserta dari database
- * @param {Object}   event         - { id, name, date, location }
+ * @param {Array}    participants  - Array peserta dari database (identitas global, bukan per event)
  * @param {Object}   options
  * @param {number}   options.cols       - Kartu per baris (default: 2)
  * @param {number}   options.rows       - Baris per halaman (default: 3)
@@ -207,7 +204,7 @@ async function drawCard(doc, p, event, ox, oy) {
  * @param {number}   options.gapMm      - Jarak antar kartu mm (default: 4)
  * @param {function} options.onProgress - (current, total) => void
  */
-export async function downloadAllIDCards(participants, event, options = {}) {
+export async function downloadAllIDCards(participants, options = {}) {
   const {
     cols       = 2,
     rows       = 3,
@@ -227,7 +224,6 @@ export async function downloadAllIDCards(participants, event, options = {}) {
   });
 
   for (let i = 0; i < participants.length; i++) {
-    const pageIdx = Math.floor(i / cardsPerPage);
     const cardIdx = i % cardsPerPage;
 
     if (i > 0 && cardIdx === 0) doc.addPage();
@@ -237,13 +233,12 @@ export async function downloadAllIDCards(participants, event, options = {}) {
     const ox  = marginMm + col * (C.W + gapMm);
     const oy  = marginMm + row * (C.H + gapMm);
 
-    await drawCard(doc, participants[i], event, ox, oy);
+    await drawCard(doc, participants[i], ox, oy);
     onProgress?.(i + 1, participants.length);
   }
 
-  const safeName = (event?.name || "Event").replace(/[^a-z0-9\s]/gi, "").trim().replace(/\s+/g, "_");
-  const dateStr  = new Date().toLocaleDateString("id-ID").replace(/\//g, "-");
-  doc.save(`IDCard_${safeName}_${dateStr}.pdf`);
+  const dateStr = new Date().toLocaleDateString("id-ID").replace(/\//g, "-");
+  doc.save(`IDCard_Peserta_${dateStr}.pdf`);
 
   return { totalCards: participants.length };
 }
@@ -251,9 +246,8 @@ export async function downloadAllIDCards(participants, event, options = {}) {
 // ─── EXPORT: Download satu kartu ──────────────────────────────────────────────
 /**
  * @param {Object} participant - Data satu peserta
- * @param {Object} event       - Data event
  */
-export async function downloadSingleIDCard(participant, event) {
+export async function downloadSingleIDCard(participant) {
   const margin = 6;
   const doc = new jsPDF({
     orientation: "landscape",
@@ -261,7 +255,7 @@ export async function downloadSingleIDCard(participant, event) {
     format: [C.W + margin * 2, C.H + margin * 2],
   });
 
-  await drawCard(doc, participant, event, margin, margin);
+  await drawCard(doc, participant, margin, margin);
 
   const safeName = (participant.namaAnak || participant.id).replace(/[^a-z0-9\s]/gi, "").trim().replace(/\s+/g, "_");
   doc.save(`IDCard_${safeName}.pdf`);

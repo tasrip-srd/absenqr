@@ -68,16 +68,16 @@ export class SheetsAPI {
 
   // ── Catat kehadiran (dari scan QR) ─────────────────────────────────────
   /**
-   * @param {object} qrData - Data hasil parse QR Code
-   *   { id, event_id, nama_ortu, nama_anak, kelas, korlas, divisi, hp }
-   * @param {string} overrideEventId - Gunakan eventId ini jika qrData tidak punya event_id
+   * @param {object} qrData - Data hasil parse QR Code (generik, tidak terikat event tertentu)
+   *   { id, nama_ortu, nama_anak, kelas, korlas, divisi, hp }
+   * @param {string} overrideEventId - Event yang sedang aktif/dipilih panitia saat scan
    * @returns {{ success, duplicate, message, waktuScan }}
    */
   async recordAttendance(qrData, overrideEventId) {
     const payload = {
       action:        "recordAttendance",
       participantId: qrData.id,
-      eventId:       qrData.event_id || overrideEventId,
+      eventId:       overrideEventId,
       namaAnak:      qrData.nama_anak  || qrData.namaAnak  || "",
       namaOrtu:      qrData.nama_ortu  || qrData.namaOrtu  || "",
       kelas:         qrData.kelas      || "",

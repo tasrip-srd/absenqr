@@ -16,15 +16,16 @@ const INIT_EVENTS = [
   { id: "EVT003", name: "Workshop Parenting 2025",      date: "2025-09-15", location: "Gedung Serba Guna",      status: "upcoming" },
 ];
 
+// Peserta bersifat global — satu identitas permanen, tidak terikat event manapun.
 const INIT_PARTICIPANTS = [
-  { id:"PST001", eventId:"EVT001", namaOrtu:"Budi Santoso",    namaAnak:"Andi Budi Santoso",     kelas:"5A", korlas:"Ibu Dewi Rahayu",    divisi:"Divisi Seni",     hp:"081234567890" },
-  { id:"PST002", eventId:"EVT001", namaOrtu:"Siti Nurhaliza",  namaAnak:"Bintang Cahya Pertiwi", kelas:"4B", korlas:"Pak Agus Setiawan",  divisi:"Divisi Dekorasi", hp:"082345678901" },
-  { id:"PST003", eventId:"EVT001", namaOrtu:"Ahmad Fauzi",     namaAnak:"Rizki Ahmad Hidayat",   kelas:"6A", korlas:"Ibu Rini Wulandari", divisi:"Divisi Konsumsi", hp:"083456789012" },
-  { id:"PST004", eventId:"EVT001", namaOrtu:"Dewi Kartika",    namaAnak:"Putri Dewi Lestari",    kelas:"5B", korlas:"Ibu Dewi Rahayu",    divisi:"Divisi Seni",     hp:"084567890123" },
-  { id:"PST005", eventId:"EVT001", namaOrtu:"Roni Hakim",      namaAnak:"Farhan Roni Maulana",   kelas:"3A", korlas:"Pak Hendra Gunawan", divisi:"Divisi Dekorasi", hp:"085678901234" },
-  { id:"PST006", eventId:"EVT002", namaOrtu:"Hendra Wijaya",   namaAnak:"Dani Hendra Wijaya",    kelas:"4A", korlas:"Pak Hendra Gunawan", divisi:"-",               hp:"086789012345" },
-  { id:"PST007", eventId:"EVT002", namaOrtu:"Rina Susanti",    namaAnak:"Luna Rina Cantika",     kelas:"2B", korlas:"Ibu Yani Suryani",   divisi:"-",               hp:"087890123456" },
-  { id:"PST008", eventId:"EVT003", namaOrtu:"Joko Susilo",     namaAnak:"Bagas Joko Pratama",    kelas:"1A", korlas:"Ibu Mira Sari",      divisi:"-",               hp:"088901234567" },
+  { id:"PST001", namaOrtu:"Budi Santoso",    namaAnak:"Andi Budi Santoso",     kelas:"5A", korlas:"Ibu Dewi Rahayu",    divisi:"Divisi Seni",     hp:"081234567890" },
+  { id:"PST002", namaOrtu:"Siti Nurhaliza",  namaAnak:"Bintang Cahya Pertiwi", kelas:"4B", korlas:"Pak Agus Setiawan",  divisi:"Divisi Dekorasi", hp:"082345678901" },
+  { id:"PST003", namaOrtu:"Ahmad Fauzi",     namaAnak:"Rizki Ahmad Hidayat",   kelas:"6A", korlas:"Ibu Rini Wulandari", divisi:"Divisi Konsumsi", hp:"083456789012" },
+  { id:"PST004", namaOrtu:"Dewi Kartika",    namaAnak:"Putri Dewi Lestari",    kelas:"5B", korlas:"Ibu Dewi Rahayu",    divisi:"Divisi Seni",     hp:"084567890123" },
+  { id:"PST005", namaOrtu:"Roni Hakim",      namaAnak:"Farhan Roni Maulana",   kelas:"3A", korlas:"Pak Hendra Gunawan", divisi:"Divisi Dekorasi", hp:"085678901234" },
+  { id:"PST006", namaOrtu:"Hendra Wijaya",   namaAnak:"Dani Hendra Wijaya",    kelas:"4A", korlas:"Pak Hendra Gunawan", divisi:"-",               hp:"086789012345" },
+  { id:"PST007", namaOrtu:"Rina Susanti",    namaAnak:"Luna Rina Cantika",     kelas:"2B", korlas:"Ibu Yani Suryani",   divisi:"-",               hp:"087890123456" },
+  { id:"PST008", namaOrtu:"Joko Susilo",     namaAnak:"Bagas Joko Pratama",    kelas:"1A", korlas:"Ibu Mira Sari",      divisi:"-",               hp:"088901234567" },
 ];
 
 const INIT_ATTENDANCE = [
@@ -178,7 +179,7 @@ function LoginPage({ onLogin }) {
 
 function DashboardPage({ events, participants, attendance, setPage, setSelEvent }) {
   const active = events.find(e=>e.status==="active");
-  const aP = participants.filter(p=>p.eventId===active?.id);
+  const aP = participants; // peserta bersifat global — semua peserta berpotensi hadir di event manapun
   const aA = attendance.filter(a=>a.eventId===active?.id);
   const pct = aP.length ? Math.round((aA.length/aP.length)*100) : 0;
   const recent = [...attendance].sort((a,b)=>b.waktuScan.localeCompare(a.waktuScan)).slice(0,5);
@@ -303,7 +304,7 @@ function EventsPage({ events, setEvents, participants, attendance, setPage, setS
 
       <div className="space-y-3">
         {events.map(ev => {
-          const evP = participants.filter(p => p.eventId === ev.id);
+          const evP = participants; // peserta global, sama untuk semua event
           const evA = attendance.filter(a => a.eventId === ev.id);
           const pct = evP.length ? Math.round((evA.length/evP.length)*100) : 0;
           return (
@@ -339,8 +340,8 @@ function ParticipantsPage({ participants, setParticipants, events, selEvent, att
   const [importUrl, setImportUrl]   = useState("");
   const [importing, setImporting]   = useState(false);
 
+  // Peserta bersifat global (satu identitas untuk semua event) — pencarian tidak difilter per event.
   const evP = participants.filter(p =>
-    p.eventId === evId &&
     [p.namaAnak,p.namaOrtu,p.kelas,p.divisi].some(v => v.toLowerCase().includes(q.toLowerCase()))
   );
   const scanned = new Set(attendance.filter(a=>a.eventId===evId).map(a=>a.participantId));
@@ -359,7 +360,6 @@ function ParticipantsPage({ participants, setParticipants, events, selEvent, att
           action:          "importPeserta",
           sourceSheetId:   match[1],
           sourceSheetName: "Form Responses 1",
-          eventId:         evId,
         }),
       });
       const json = await res.json();
@@ -420,10 +420,12 @@ function ParticipantsPage({ participants, setParticipants, events, selEvent, att
             className="w-full pl-10 pr-4 py-2.5 text-sm border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-400"/>
         </div>
         <select value={evId} onChange={e=>setEvId(e.target.value)}
+          title="Status kehadiran ditampilkan untuk event ini"
           className="text-sm border border-slate-200 rounded-xl px-3 py-2.5 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-400">
           {events.map(e=><option key={e.id} value={e.id}>{e.name}</option>)}
         </select>
       </div>
+      <p className="text-xs text-slate-400 -mt-2">Kolom status menunjukkan kehadiran pada event yang dipilih di atas — peserta yang sama bisa dicek di event lain.</p>
 
       <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
         <div className="overflow-x-auto">
@@ -461,24 +463,22 @@ function ParticipantsPage({ participants, setParticipants, events, selEvent, att
   );
 }
 
-function IDCardsPage({ participants, events, selEvent }) {
-  const [evId, setEvId] = useState(selEvent||events[0]?.id||"");
+function IDCardsPage({ participants }) {
   const [preview, setPreview] = useState(null);
   const [hovered, setHovered] = useState(null);
   const [gen, setGen] = useState(false);
   const [pct, setPct] = useState(0);
-  const ev = events.find(e=>e.id===evId);
-  const evP = participants.filter(p=>p.eventId===evId);
+  const evP = participants; // kartu bersifat permanen & global — bukan milik satu event
 
   const IDCard = ({ p, large=false }) => {
-    const qrData = encodeURIComponent(JSON.stringify({id:p.id,event_id:p.eventId,nama_ortu:p.namaOrtu,nama_anak:p.namaAnak,kelas:p.kelas,korlas:p.korlas,divisi:p.divisi,hp:p.hp}));
+    const qrData = encodeURIComponent(JSON.stringify({id:p.id,nama_ortu:p.namaOrtu,nama_anak:p.namaAnak,kelas:p.kelas,korlas:p.korlas,divisi:p.divisi,hp:p.hp}));
     const qrSize = large ? 100 : 80;
     return (
       <div className="bg-white rounded-2xl overflow-hidden border border-slate-200 shadow-md">
         <div className="px-4 py-3 flex flex-wrap items-start justify-between gap-3" style={{background:"linear-gradient(90deg,#4338ca,#6366f1)"}}>
           <div>
-            <p className="text-xs font-bold uppercase tracking-widest" style={{color:"rgba(255,255,255,0.6)"}}>ID Card Peserta</p>
-            <p className="text-white font-bold text-sm leading-tight mt-0.5 truncate max-w-xs">{ev?.name||""}</p>
+            <p className="text-xs font-bold uppercase tracking-widest" style={{color:"rgba(255,255,255,0.6)"}}>Kartu Peserta Tetap</p>
+            <p className="text-white font-bold text-sm leading-tight mt-0.5 truncate max-w-xs">Berlaku untuk semua event</p>
           </div>
           <div className="w-7 h-7 rounded-lg flex items-center justify-center" style={{background:"rgba(255,255,255,0.2)"}}><QrCode size={14} className="text-white"/></div>
         </div>
@@ -504,7 +504,7 @@ function IDCardsPage({ participants, events, selEvent }) {
         </div>
         <div className="bg-indigo-50 px-4 py-2 flex flex-wrap items-start justify-between gap-3">
           <p className="text-indigo-500 text-xs truncate">{p.korlas}</p>
-          <p className="text-indigo-400 text-xs flex-shrink-0">{fmtDate(ev?.date)}</p>
+          <p className="text-indigo-400 text-xs flex-shrink-0">ID Permanen</p>
         </div>
       </div>
     );
@@ -520,7 +520,7 @@ function IDCardsPage({ participants, events, selEvent }) {
       <IDCard p={preview} large/>
       <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-700 flex items-start gap-2">
         <AlertCircle size={14} className="flex-shrink-0 mt-0.5"/>
-        <span>Klik <strong>Cetak Kartu</strong> untuk mencetak. Serahkan kartu ini kepada peserta <strong>sebelum hari H</strong>. QR Code berfungsi sebagai tanda masuk saat event berlangsung.</span>
+        <span>Klik <strong>Cetak Kartu</strong> untuk mencetak. Kartu ini bersifat permanen — cukup dicetak <strong>satu kali</strong> dan berlaku untuk semua event, tidak perlu dicetak ulang tiap event.</span>
       </div>
     </div>
   );
@@ -528,17 +528,13 @@ function IDCardsPage({ participants, events, selEvent }) {
   return (
     <div className="p-6 space-y-5 max-w-full">
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div><h1 className="text-xl font-black text-slate-900">ID Card & QR Code</h1><p className="text-slate-500 text-sm mt-0.5">Generate dan cetak kartu identitas peserta</p></div>
-        <div className="flex gap-2">
-          <select value={evId} onChange={e=>setEvId(e.target.value)} className="text-sm border border-slate-200 rounded-xl px-3 py-2.5 bg-white focus:outline-none">
-            {events.map(e=><option key={e.id} value={e.id}>{e.name}</option>)}
-          </select>
-          <button
+        <div><h1 className="text-xl font-black text-slate-900">ID Card & QR Code</h1><p className="text-slate-500 text-sm mt-0.5">Kartu identitas permanen peserta — berlaku untuk semua event</p></div>
+        <button
   onClick={async () => {
     if (!evP.length) { alert("Tidak ada peserta untuk dicetak"); return; }
     setGen(true);
     try {
-      await downloadAllIDCards(evP, ev, {
+      await downloadAllIDCards(evP, {
         onProgress: (c, t) => setPct(Math.round(c / t * 100)),
       });
     } catch (err) {
@@ -551,13 +547,12 @@ function IDCardsPage({ participants, events, selEvent }) {
   className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-bold px-4 py-2.5 rounded-2xl disabled:opacity-50 transition-colors">
   {gen ? `Generating... ${pct}%` : <><Printer size={16}/> Cetak Semua</>}
 </button>
-        </div>
       </div>
       <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 flex items-start gap-3">
         <AlertCircle size={18} className="text-amber-600 flex-shrink-0 mt-0.5"/>
         <div className="text-sm text-amber-800">
           <p className="font-bold mb-0.5">Alur penggunaan ID Card</p>
-          <p>QR Code berisi data lengkap peserta (nama anak, ortu, kelas, korlas, divisi, HP). Cetak kartu → serahkan ke peserta sebelum hari H → panitia scan QR Code saat check-in → data masuk otomatis ke Google Sheets.</p>
+          <p>QR Code berisi identitas permanen peserta (nama anak, ortu, kelas, korlas, divisi, HP) dan <strong>tidak terikat event tertentu</strong>. Cetak kartu sekali → serahkan ke peserta → panitia scan QR Code saat check-in di event manapun → kehadiran otomatis tercatat ke event yang sedang aktif/dipilih panitia.</p>
         </div>
       </div>
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -571,7 +566,7 @@ function IDCardsPage({ participants, events, selEvent }) {
             )}
           </div>
         ))}
-        {evP.length===0 && <div className="col-span-3 py-16 text-center text-slate-400"><QrCode size={36} className="mx-auto mb-3 opacity-20"/><p className="text-sm">Tidak ada peserta untuk event ini</p></div>}
+        {evP.length===0 && <div className="col-span-3 py-16 text-center text-slate-400"><QrCode size={36} className="mx-auto mb-3 opacity-20"/><p className="text-sm">Belum ada peserta terdaftar</p></div>}
       </div>
     </div>
   );
@@ -582,13 +577,14 @@ function ScannerPage({ participants, events, attendance, setAttendance, selEvent
   const [result, setResult] = useState(null);
   const [manualId, setManualId] = useState("");
 
-  const evP = participants.filter(p=>p.eventId===evId);
+  const evP = participants; // peserta global — siapa saja bisa check-in ke event manapun
   const evA = attendance.filter(a=>a.eventId===evId);
   const scanned = new Set(evA.map(a=>a.participantId));
   const pct = evP.length ? Math.round((evA.length/evP.length)*100) : 0;
 
   const doScan = (pid) => {
-    const p = evP.find(x=>x.id===String(pid).toUpperCase());
+    // Peserta dicari lintas semua event — QR Code bersifat generik dan bisa dipakai di event manapun
+    const p = participants.find(x=>x.id===String(pid).toUpperCase());
     if (!p)               { setResult({type:"notfound",p:null}); setTimeout(()=>setResult(null),2800); return; }
     if (scanned.has(p.id)){ setResult({type:"duplicate",p});     setTimeout(()=>setResult(null),2800); return; }
     setAttendance(prev=>[...prev,{participantId:p.id,eventId:evId,waktuScan:new Date().toISOString()}]);
@@ -635,7 +631,6 @@ function ScannerPage({ participants, events, attendance, setAttendance, selEvent
       <div className="grid lg:grid-cols-2 gap-6">
         <div className="space-y-4">
           <QRScannerCamera
-            eventId={evId}
             autoStart
             pauseMs={2800}
             onScanSuccess={handleCameraScan}
@@ -716,7 +711,7 @@ function ScannerPage({ participants, events, attendance, setAttendance, selEvent
 function ReportPage({ participants, events, attendance }) {
   const [evId, setEvId] = useState(events[0]?.id||"");
   const [tab, setTab] = useState("all");
-  const evP = participants.filter(p=>p.eventId===evId);
+  const evP = participants; // peserta global — laporan menilai kehadiran seluruh peserta pada event terpilih
   const evA = attendance.filter(a=>a.eventId===evId);
   const scanned = new Set(evA.map(a=>a.participantId));
   const displayed = evP.filter(p=>tab==="all"?true:tab==="hadir"?scanned.has(p.id):!scanned.has(p.id));
@@ -837,7 +832,7 @@ export default function App() {
     dashboard:    <DashboardPage    {...shared} setSelEvent={setSelEvent}/>,
     events:       <EventsPage       {...shared} setSelEvent={setSelEvent}/>,
     participants: <ParticipantsPage {...shared} selEvent={selEvent}/>,
-    "id-cards":   <IDCardsPage      {...shared} selEvent={selEvent}/>,
+    "id-cards":   <IDCardsPage      participants={participants}/>,
     scanner:      <ScannerPage      {...shared} setAttendance={setAttendance} selEvent={selEvent}/>,
     report:       <ReportPage       {...shared}/>,
   };
