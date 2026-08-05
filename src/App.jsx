@@ -6,6 +6,7 @@ import {
   RefreshCw, X, Check, Clock, Activity
 } from "lucide-react";
 import { downloadAllIDCards, downloadSingleIDCard } from "./utils/pdfGenerator";
+import { playSuccessSound, playDuplicateSound, playErrorSound } from "./utils/scanSounds";
 import QRScannerCamera from "./components/QRScannerCamera";
 
 const MOCK_USER = { name: "Sari Dewi", email: "panitia@sdharapan.sch.id", initials: "SD" };
@@ -585,15 +586,16 @@ function ScannerPage({ participants, events, attendance, setAttendance, selEvent
   const doScan = (pid) => {
     // Peserta dicari lintas semua event — QR Code bersifat generik dan bisa dipakai di event manapun
     const p = participants.find(x=>x.id===String(pid).toUpperCase());
-    if (!p)               { setResult({type:"notfound",p:null}); setTimeout(()=>setResult(null),2800); return; }
-    if (scanned.has(p.id)){ setResult({type:"duplicate",p});     setTimeout(()=>setResult(null),2800); return; }
+    if (!p)               { playErrorSound();     setResult({type:"notfound",p:null}); setTimeout(()=>setResult(null),2800); return; }
+    if (scanned.has(p.id)){ playDuplicateSound();  setResult({type:"duplicate",p});     setTimeout(()=>setResult(null),2800); return; }
     setAttendance(prev=>[...prev,{participantId:p.id,eventId:evId,waktuScan:new Date().toISOString()}]);
+    playSuccessSound();
     setResult({type:"success",p});
     setTimeout(()=>setResult(null),2800);
   };
 
   const handleCameraScan = (qrData) => {
-    if (!qrData?.id) { setResult({type:"notfound",p:null}); setTimeout(()=>setResult(null),2800); return; }
+    if (!qrData?.id) { playErrorSound(); setResult({type:"notfound",p:null}); setTimeout(()=>setResult(null),2800); return; }
     doScan(qrData.id);
   };
 
