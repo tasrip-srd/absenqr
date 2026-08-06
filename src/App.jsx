@@ -9,8 +9,13 @@ import { downloadAllIDCards, downloadSingleIDCard } from "./utils/pdfGenerator";
 import { playSuccessSound, playDuplicateSound, playErrorSound } from "./utils/scanSounds";
 import QRScannerCamera from "./components/QRScannerCamera";
 import { getAPI } from "./utils/sheetsAPI";
+import { useGoogleLogin, googleLogout } from "@react-oauth/google";
 
-const MOCK_USER = { name: "Sari Dewi", email: "panitia@sdharapan.sch.id", initials: "SD" };
+const initialsOf = (name, email) => {
+  const src = (name || email || "?").trim();
+  const parts = src.split(/\s+/).filter(Boolean);
+  return (parts.length >= 2 ? parts[0][0] + parts[1][0] : src.slice(0, 2)).toUpperCase();
+};
 
 const fmtDate = (s) => s ? new Date(s + (s.length===10?"T00:00:00":"")).toLocaleDateString("id-ID",{day:"numeric",month:"long",year:"numeric"}) : "-";
 const fmtTime = (s) => s ? new Date(s).toLocaleTimeString("id-ID",{hour:"2-digit",minute:"2-digit",second:"2-digit"}) : "-";
@@ -94,7 +99,13 @@ function Sidebar({ page, setPage, user, onLogout, open, onClose }) {
       </nav>
       <div className="border-t border-slate-800 p-3">
         <div className="flex items-center gap-3 px-2 py-2 rounded-xl hover:bg-slate-800 transition-colors">
-          <div className="w-8 h-8 bg-indigo-600 rounded-full flex items-center justify-center text-xs font-bold text-white flex-shrink-0">{user.initials}</div>
+          {user.picture
+            ? <img src={user.picture} alt="" referrerPolicy="no-referrer"
+                className="w-8 h-8 rounded-full flex-shrink-0 object-cover"
+                onError={e => { e.currentTarget.style.display = "none"; e.currentTarget.nextSibling.style.display = "flex"; }}/>
+            : null}
+          <div className="w-8 h-8 bg-indigo-600 rounded-full items-center justify-center text-xs font-bold text-white flex-shrink-0"
+            style={{ display: user.picture ? "none" : "flex" }}>{user.initials}</div>
           <div className="flex-1 min-w-0">
             <p className="text-xs font-semibold text-white truncate">{user.name}</p>
             <p className="text-xs text-slate-500 truncate">{user.email}</p>
@@ -108,7 +119,34 @@ function Sidebar({ page, setPage, user, onLogout, open, onClose }) {
 
 function LoginPage({ onLogin }) {
   const [loading, setLoading] = useState(false);
-  const go = () => { setLoading(true); setTimeout(()=>{setLoading(false);onLogin();},1800); };
+  const [error, setError]     = useState("");
+
+  const go = useGoogleLogin({
+    scope: "openid email profile",
+    onSuccess: async (tokenResponse) => {
+      try {
+        const res = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
+          headers: { Authorization: `Bearer ${tokenResponse.access_token}` },
+        });
+        if (!res.ok) throw new Error("Gagal mengambil profil akun Google");
+        const profile = await res.json();
+        onLogin({
+          name:     profile.name || profile.email,
+          email:    profile.email,
+          picture:  profile.picture || "",
+          initials: initialsOf(profile.name, profile.email),
+        });
+      } catch (err) {
+        setError(err.message);
+      } finally {
+        setLoading(false);
+      }
+    },
+    onError: () => { setError("Login Google gagal atau dibatalkan."); setLoading(false); },
+  });
+
+  const handleClick = () => { setError(""); setLoading(true); go(); };
+
   return (
     <div className="min-h-screen flex items-center justify-center p-4" style={{background:"linear-gradient(135deg,#0f172a 0%,#1e1b4b 55%,#0f172a 100%)"}}>
       <div className="w-full max-w-sm">
@@ -122,7 +160,7 @@ function LoginPage({ onLogin }) {
         <div className="rounded-3xl p-8" style={{background:"rgba(255,255,255,0.06)",border:"1px solid rgba(255,255,255,0.1)"}}>
           <h2 className="text-white font-bold text-base mb-1">Masuk ke Dashboard Panitia</h2>
           <p className="text-slate-400 text-sm mb-6">Gunakan akun Google panitia untuk mengakses sistem.</p>
-          <button onClick={go} disabled={loading}
+          <button onClick={handleClick} disabled={loading}
             className="w-full flex items-center justify-center gap-3 bg-white text-slate-800 font-semibold py-3.5 rounded-2xl hover:bg-slate-50 active:scale-95 transition-all disabled:opacity-60">
             {loading
               ? <><RefreshCw size={18} className="animate-spin text-indigo-500"/><span>Sedang masuk...</span></>
@@ -134,6 +172,7 @@ function LoginPage({ onLogin }) {
                 </svg><span>Masuk dengan Google</span></>
             }
           </button>
+          {error && <p className="text-red-400 text-xs text-center mt-3 font-semibold">{error}</p>}
           <div className="flex items-center justify-center gap-2 mt-5 text-slate-500 text-xs">
             <Shield size={12}/><span>Diamankan oleh Google OAuth 2.0</span>
           </div>
@@ -844,7 +883,7 @@ function ErrorScreen({ message, onRetry }) {
 }
 
 export default function App() {
-  const [loggedIn, setLoggedIn]       = useState(false);
+  const [user, setUser]               = useState(null);
   const [page, setPage]               = useState("dashboard");
   const [selEvent, setSelEvent]       = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -878,9 +917,9 @@ export default function App() {
     }
   };
 
-  useEffect(() => { if (loggedIn) loadAll(); }, [loggedIn]); // eslint-disable-line
+  useEffect(() => { if (user) loadAll(); }, [user]); // eslint-disable-line
 
-  if (!loggedIn) return <LoginPage onLogin={()=>setLoggedIn(true)}/>;
+  if (!user)     return <LoginPage onLogin={setUser}/>;
   if (loading)   return <LoadingScreen/>;
   if (loadError) return <ErrorScreen message={loadError} onRetry={loadAll}/>;
 
@@ -904,8 +943,8 @@ export default function App() {
       <Sidebar
         page={page}
         setPage={p => { setPage(p); setSidebarOpen(false); }}
-        user={MOCK_USER}
-        onLogout={() => setLoggedIn(false)}
+        user={user}
+        onLogout={() => { googleLogout(); setUser(null); }}
         open={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
       />
