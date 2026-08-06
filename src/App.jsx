@@ -584,7 +584,7 @@ function IDCardsPage({ participants }) {
   );
 }
 
-function ScannerPage({ participants, events, attendance, setAttendance, selEvent }) {
+function ScannerPage({ participants, events, attendance, setAttendance, selEvent, lastSync, syncing }) {
   const [evId, setEvId] = useState(selEvent||events.find(e=>e.status==="active")?.id||events[0]?.id||"");
   const [result, setResult] = useState(null);
   const [manualId, setManualId] = useState("");
@@ -664,7 +664,19 @@ function ScannerPage({ participants, events, attendance, setAttendance, selEvent
   return (
     <div className="p-6 max-w-full">
       <div className="flex flex-wrap items-start justify-between gap-3 mb-6">
-        <div><h1 className="text-xl font-black text-slate-900">Scan Absensi</h1><p className="text-slate-500 text-sm mt-0.5">Arahkan kamera ke QR Code pada kartu peserta</p></div>
+        <div>
+          <div className="flex items-center gap-2.5 flex-wrap">
+            <h1 className="text-xl font-black text-slate-900">Scan Absensi</h1>
+            <span className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-full">
+              <span className={`w-1.5 h-1.5 bg-emerald-500 rounded-full ${syncing?"animate-ping":"animate-pulse"}`}/>
+              Live — sync tiap 4 detik
+            </span>
+          </div>
+          <p className="text-slate-500 text-sm mt-0.5">
+            Arahkan kamera ke QR Code pada kartu peserta — hasil scan panitia lain otomatis muncul di sini
+            {lastSync && <> · diperbarui {fmtTime(lastSync.toISOString())}</>}
+          </p>
+        </div>
         <select value={evId} onChange={e=>setEvId(e.target.value)} className="text-sm border border-slate-200 rounded-xl px-3 py-2.5 bg-white focus:outline-none">
           {events.map(e=><option key={e.id} value={e.id}>{e.name}</option>)}
         </select>
@@ -893,6 +905,8 @@ export default function App() {
   const [attendance, setAttendance]     = useState([]);
   const [loading, setLoading]           = useState(true);
   const [loadError, setLoadError]       = useState(null);
+  const [lastSync, setLastSync]         = useState(null);
+  const [syncing, setSyncing]           = useState(false);
 
   // Muat data nyata dari Google Sheets (via Apps Script backend) — sumber kebenaran tunggal,
   // jadi data tidak hilang saat refresh karena tidak lagi disimpan hanya di memori React.
@@ -919,6 +933,31 @@ export default function App() {
 
   useEffect(() => { if (user) loadAll(); }, [user]); // eslint-disable-line
 
+  // Sinkronisasi absensi lintas HP panitia. Apps Script Web App tidak mendukung
+  // WebSocket/push, jadi "real-time" di sini dicapai lewat polling ringan
+  // (hanya endpoint absensi, bukan seluruh data) tiap beberapa detik — cukup
+  // untuk beberapa panitia scan bersamaan dan saling melihat hasil scan yang lain.
+  useEffect(() => {
+    if (!user || loading || loadError) return;
+    const ATTENDANCE_POLL_MS = 4000;
+    let cancelled = false;
+    const tick = async () => {
+      if (document.hidden) return; // hemat kuota Apps Script saat tab tidak aktif
+      try {
+        setSyncing(true);
+        const api = getAPI();
+        const { attendance: fresh } = await api.getAttendance();
+        if (!cancelled) { setAttendance(fresh); setLastSync(new Date()); }
+      } catch {
+        // Gagal sesaat (mis. jaringan) — biarkan, percobaan berikutnya akan menyusul.
+      } finally {
+        if (!cancelled) setSyncing(false);
+      }
+    };
+    const id = setInterval(tick, ATTENDANCE_POLL_MS);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [user, loading, loadError]);
+
   if (!user)     return <LoginPage onLogin={setUser}/>;
   if (loading)   return <LoadingScreen/>;
   if (loadError) return <ErrorScreen message={loadError} onRetry={loadAll}/>;
@@ -929,7 +968,7 @@ export default function App() {
     events:       <EventsPage       {...shared} setSelEvent={setSelEvent}/>,
     participants: <ParticipantsPage {...shared} selEvent={selEvent}/>,
     "id-cards":   <IDCardsPage      participants={participants}/>,
-    scanner:      <ScannerPage      {...shared} setAttendance={setAttendance} selEvent={selEvent}/>,
+    scanner:      <ScannerPage      {...shared} setAttendance={setAttendance} selEvent={selEvent} lastSync={lastSync} syncing={syncing}/>,
     report:       <ReportPage       {...shared}/>,
   };
 
