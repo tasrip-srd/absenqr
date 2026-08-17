@@ -28,6 +28,13 @@ const STATE = {
   ERROR:    "error",
 };
 
+// Deteksi gagal-muat chunk JS (bukan library beneran hilang) — khas terjadi
+// saat tab dibuka sejak sebelum deploy terbaru, sehingga browser masih minta
+// file dengan hash lama yang sudah tidak ada di server setelah redeploy SPA.
+const isModuleLoadError = (err) =>
+  /fetch dynamically imported module|failed to fetch|loading chunk|importing a module script failed/i
+    .test(err?.message || String(err));
+
 /**
  * QRScannerCamera
  * @param {function} onScanSuccess  - dipanggil dengan objek data QR { id, nama_anak, ... } — QR bersifat generik, tidak terikat event tertentu
@@ -52,6 +59,10 @@ export default function QRScannerCamera({
   // belakang lewat facingMode — lebih andal daripada mengandalkan label
   // device (label "back/rear" tidak selalu tersedia di semua HP/browser).
   const [manualCam, setManualCam]     = useState(false);
+  // true jika error disebabkan chunk JS gagal dimuat (mis. tab dibuka sejak
+  // sebelum deploy terbaru, jadi hash file lama sudah tidak ada di server) —
+  // kasus ini butuh reload penuh, bukan retry di dalam state React.
+  const [needsReload, setNeedsReload] = useState(false);
   const scannerRef   = useRef(null);
   const mountedRef   = useRef(true);
   const pauseTimer   = useRef(null);
@@ -96,8 +107,15 @@ export default function QRScannerCamera({
           setState(STATE.ERROR);
           onScanError?.(msg);
         });
-    }).catch(() => {
-      setErrorMsg("Library html5-qrcode belum terinstall. Jalankan: npm install html5-qrcode");
+    }).catch((err) => {
+      if (!mountedRef.current) return;
+      console.error("[QRScannerCamera] Gagal memuat modul html5-qrcode:", err);
+      if (isModuleLoadError(err)) {
+        setNeedsReload(true);
+        setErrorMsg("Gagal memuat modul pemindai QR. Ini biasanya terjadi setelah aplikasi baru saja diperbarui — muat ulang halaman untuk mengambil versi terbaru.");
+      } else {
+        setErrorMsg("Library html5-qrcode belum terinstall. Jalankan: npm install html5-qrcode");
+      }
       setState(STATE.ERROR);
     });
   }, [autoStart, onScanError]);
@@ -167,9 +185,16 @@ export default function QRScannerCamera({
       if (mountedRef.current) setState(STATE.SCANNING);
     } catch (err) {
       if (!mountedRef.current) return;
-      const msg = /NotAllowed|Permission/i.test(err.message)
-        ? "Akses kamera ditolak. Izinkan kamera di pengaturan browser lalu coba lagi."
-        : "Gagal memulai kamera: " + (err.message || err);
+      console.error("[QRScannerCamera] Gagal memulai kamera:", err);
+      let msg;
+      if (isModuleLoadError(err)) {
+        setNeedsReload(true);
+        msg = "Gagal memuat modul pemindai QR. Ini biasanya terjadi setelah aplikasi baru saja diperbarui — muat ulang halaman untuk mengambil versi terbaru.";
+      } else if (/NotAllowed|Permission/i.test(err.message)) {
+        msg = "Akses kamera ditolak. Izinkan kamera di pengaturan browser lalu coba lagi.";
+      } else {
+        msg = "Gagal memulai kamera: " + (err.message || err);
+      }
       setErrorMsg(msg);
       setState(STATE.ERROR);
       onScanError?.(msg);
@@ -341,12 +366,13 @@ export default function QRScannerCamera({
             <p className="text-red-300 text-sm text-center font-semibold leading-relaxed">{errorMsg}</p>
             <button
               onClick={() => {
+                if (needsReload) { window.location.reload(); return; }
                 setErrorMsg(null);
                 setState(STATE.LOADING);
                 setTimeout(() => setState(STATE.SCANNING), 200);
               }}
               className="mt-4 flex items-center gap-2 bg-indigo-600 text-white text-sm font-bold px-5 py-2.5 rounded-2xl hover:bg-indigo-500 transition-colors">
-              <RefreshCw size={15} /> Coba Lagi
+              <RefreshCw size={15} /> {needsReload ? "Muat Ulang Halaman" : "Coba Lagi"}
             </button>
           </div>
         )}
