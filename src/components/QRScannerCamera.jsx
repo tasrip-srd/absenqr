@@ -35,6 +35,13 @@ const isModuleLoadError = (err) =>
   /fetch dynamically imported module|failed to fetch|loading chunk|importing a module script failed/i
     .test(err?.message || String(err));
 
+// Jeda setelah melepas kamera sebelum minta stream baru. Chrome Android
+// (dan beberapa browser mobile lain) butuh waktu untuk benar-benar melepas
+// handle hardware kamera ke OS — start() langsung setelah stop() tanpa jeda
+// adalah penyebab umum error "Could not start video source".
+const CAMERA_RELEASE_DELAY_MS = 500;
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 /**
  * QRScannerCamera
  * @param {function} onScanSuccess  - dipanggil dengan objek data QR { id, nama_anak, ... } — QR bersifat generik, tidak terikat event tertentu
@@ -66,6 +73,20 @@ export default function QRScannerCamera({
   const scannerRef   = useRef(null);
   const mountedRef   = useRef(true);
   const pauseTimer   = useRef(null);
+  // Ref (bukan state) — perlu bisa dibaca/ditulis secara sinkron agar benar-
+  // benar mencegah 2 pemanggilan startCamera() berjalan bersamaan (mis. efek
+  // re-run + klik tombol di tick yang sama). State React tidak cukup cepat
+  // untuk guard reentrancy semacam ini karena update-nya async/batched.
+  const isStartingRef = useRef(false);
+
+  // ── Lepas instance scanner & stream kamera yang berjalan (best-effort) ─────
+  const releaseScanner = useCallback(async () => {
+    const scanner = scannerRef.current;
+    scannerRef.current = null;
+    if (!scanner) return;
+    try { await scanner.stop(); } catch {}
+    try { scanner.clear(); }       catch {}
+  }, []);
 
   // ── Cleanup saat unmount ───────────────────────────────────────────────────
   useEffect(() => {
@@ -122,22 +143,28 @@ export default function QRScannerCamera({
 
   // ── Start kamera ───────────────────────────────────────────────────────────
   const startCamera = useCallback(async () => {
-    if (!cameras.length || !mountedRef.current) return;
+    // Cegah double-start: kalau ada proses start yang masih berjalan (mis.
+    // efek re-run sementara startCamera sebelumnya belum selesai), jangan
+    // mulai lagi — dua panggilan .start() bersamaan di html5-qrcode adalah
+    // penyebab umum "Could not start video source" di Android.
+    if (isStartingRef.current || !cameras.length || !mountedRef.current) return;
+    isStartingRef.current = true;
     setState(STATE.LOADING);
     setErrorMsg(null);
 
+    let scanner = null;
     try {
       const { Html5Qrcode } = await import("html5-qrcode");
 
-      // Bersihkan instance lama
+      // Pastikan instance & stream kamera lama benar-benar dilepas, lalu beri
+      // jeda ke OS sebelum minta stream baru (lihat CAMERA_RELEASE_DELAY_MS).
       if (scannerRef.current) {
-        try { await scannerRef.current.stop(); }  catch {}
-        try { scannerRef.current.clear(); }        catch {}
-        scannerRef.current = null;
+        await releaseScanner();
+        await sleep(CAMERA_RELEASE_DELAY_MS);
+        if (!mountedRef.current) return;
       }
 
-      const scanner = new Html5Qrcode("absenqr-camera-view", { verbose: false });
-      scannerRef.current = scanner;
+      scanner = new Html5Qrcode("absenqr-camera-view", { verbose: false });
 
       // Default: minta kamera belakang via facingMode (tidak bergantung pada
       // urutan/label device — paling andal untuk mobile). Setelah user
@@ -171,6 +198,13 @@ export default function QRScannerCamera({
         () => {}
       );
 
+      // Baru simpan ke ref SETELAH start() sukses. Kalau disimpan lebih awal
+      // dan start() gagal, instance yang belum pernah scanning itu nyangkut
+      // di ref — .stop() padanya selalu throw ("not scanning"), jadi stream
+      // yang mungkin sudah diminta browser tidak pernah dilepas, dan
+      // percobaan berikutnya gagal lagi dengan "Could not start video source".
+      scannerRef.current = scanner;
+
       // Paksa continuous autofocus lewat track langsung — sebagian browser
       // hanya menerima constraint ini setelah track aktif, bukan saat start().
       try {
@@ -184,6 +218,13 @@ export default function QRScannerCamera({
 
       if (mountedRef.current) setState(STATE.SCANNING);
     } catch (err) {
+      // Best-effort: instance yang gagal start tidak pernah masuk stateManager
+      // "scanning" jadi .stop() normalnya throw, tapi tetap dicoba jaga-jaga
+      // kalau browser sempat memberi sebagian track sebelum start() gagal.
+      if (scanner) {
+        try { await scanner.stop(); } catch {}
+        try { scanner.clear(); }       catch {}
+      }
       if (!mountedRef.current) return;
       console.error("[QRScannerCamera] Gagal memulai kamera:", err);
       let msg;
@@ -192,25 +233,25 @@ export default function QRScannerCamera({
         msg = "Gagal memuat modul pemindai QR. Ini biasanya terjadi setelah aplikasi baru saja diperbarui — muat ulang halaman untuk mengambil versi terbaru.";
       } else if (/NotAllowed|Permission/i.test(err.message)) {
         msg = "Akses kamera ditolak. Izinkan kamera di pengaturan browser lalu coba lagi.";
+      } else if (/Could not start video source/i.test(err.message || "")) {
+        msg = "Kamera sedang dipakai proses lain atau belum sempat dilepas. Tunggu sebentar lalu coba lagi.";
       } else {
         msg = "Gagal memulai kamera: " + (err.message || err);
       }
       setErrorMsg(msg);
       setState(STATE.ERROR);
       onScanError?.(msg);
+    } finally {
+      isStartingRef.current = false;
     }
-  }, [cameras, camIdx, manualCam, onScanError]);
+  }, [cameras, camIdx, manualCam, onScanError, releaseScanner]);
 
   // ── Stop kamera ────────────────────────────────────────────────────────────
   const stopCamera = useCallback(async () => {
     clearTimeout(pauseTimer.current);
-    if (scannerRef.current) {
-      try { await scannerRef.current.stop(); }  catch {}
-      try { scannerRef.current.clear(); }        catch {}
-      scannerRef.current = null;
-    }
+    await releaseScanner();
     if (mountedRef.current) setState(STATE.IDLE);
-  }, []);
+  }, [releaseScanner]);
 
   // ── Efek: mulai kamera ketika state berubah ke SCANNING ───────────────────
   useEffect(() => {
@@ -247,30 +288,56 @@ export default function QRScannerCamera({
 
   // Resume scanning setelah jeda
   const resumeAfterDelay = (ms) => {
-    pauseTimer.current = setTimeout(() => {
+    pauseTimer.current = setTimeout(async () => {
       if (!mountedRef.current) return;
       setErrorMsg(null);
       if (scannerRef.current) {
         try {
           scannerRef.current.resume();
+          setState(STATE.SCANNING);
+          return;
         } catch {
-          // resume() gagal (jarang, tergantung browser) — restart penuh
-          // supaya kamera tidak terlihat "mati"/freeze setelah scan.
-          scannerRef.current = null;
+          // resume() gagal (jarang, tergantung browser) — restart penuh.
+          // Lepas instance lama dengan benar (stop+clear) dan beri jeda
+          // sebelum start baru — jangan langsung null-kan ref begitu saja,
+          // itu bikin stream lama bocor dan start berikutnya gagal dengan
+          // "Could not start video source".
+          await releaseScanner();
+          await sleep(CAMERA_RELEASE_DELAY_MS);
         }
       }
-      setState(STATE.SCANNING);
+      if (mountedRef.current) setState(STATE.SCANNING);
     }, ms);
   };
 
   // ── Switch kamera (depan/belakang) ────────────────────────────────────────
   const switchCamera = async () => {
-    if (cameras.length < 2) return;
-    await stopCamera();
+    if (cameras.length < 2 || isStartingRef.current) return;
+    await stopCamera(); // sudah termasuk releaseScanner (stop+clear)
     setManualCam(true);
     const next = (camIdx + 1) % cameras.length;
     setCamIdx(next);
-    setTimeout(() => { if (mountedRef.current) setState(STATE.SCANNING); }, 300);
+    // Beri jeda ke OS sebelum minta kamera baru — lihat CAMERA_RELEASE_DELAY_MS.
+    await sleep(CAMERA_RELEASE_DELAY_MS);
+    if (mountedRef.current) setState(STATE.SCANNING);
+  };
+
+  // ── Mulai / coba lagi setelah error ────────────────────────────────────────
+  const handleStartClick = async () => {
+    if (needsReload) { window.location.reload(); return; }
+    if (isStartingRef.current) return;
+    if (state === STATE.ERROR) {
+      // Retry harus tunggu cleanup selesai dulu, bukan langsung lompat ke
+      // SCANNING — instance sebelumnya (kalau ada sisa) perlu waktu dilepas
+      // supaya tidak langsung tabrakan dengan permintaan kamera yang baru.
+      setErrorMsg(null);
+      setState(STATE.LOADING);
+      await releaseScanner();
+      await sleep(CAMERA_RELEASE_DELAY_MS);
+      if (mountedRef.current) setState(STATE.SCANNING);
+    } else {
+      setState(STATE.SCANNING);
+    }
   };
 
   // ── Toggle flash/torch ─────────────────────────────────────────────────────
@@ -365,12 +432,7 @@ export default function QRScannerCamera({
             <CameraOff size={40} className="text-red-400 mb-3" />
             <p className="text-red-300 text-sm text-center font-semibold leading-relaxed">{errorMsg}</p>
             <button
-              onClick={() => {
-                if (needsReload) { window.location.reload(); return; }
-                setErrorMsg(null);
-                setState(STATE.LOADING);
-                setTimeout(() => setState(STATE.SCANNING), 200);
-              }}
+              onClick={handleStartClick}
               className="mt-4 flex items-center gap-2 bg-indigo-600 text-white text-sm font-bold px-5 py-2.5 rounded-2xl hover:bg-indigo-500 transition-colors">
               <RefreshCw size={15} /> {needsReload ? "Muat Ulang Halaman" : "Coba Lagi"}
             </button>
@@ -425,7 +487,7 @@ export default function QRScannerCamera({
       {/* ── Tombol Start / Stop ─────────────────────────────────────────── */}
       <div className="flex gap-2">
         {(isIdle || isError) && (
-          <button onClick={() => setState(STATE.SCANNING)}
+          <button onClick={handleStartClick}
             className="flex-1 flex items-center justify-center gap-2 bg-indigo-600 text-white py-3 rounded-2xl font-bold text-sm hover:bg-indigo-700 active:scale-95 transition-all">
             <Camera size={18} /> Mulai Scan Kamera
           </button>
