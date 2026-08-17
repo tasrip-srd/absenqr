@@ -48,6 +48,10 @@ export default function QRScannerCamera({
   const [camIdx, setCamIdx]           = useState(0);
   const [errorMsg, setErrorMsg]       = useState(null);
   const [torchOn, setTorchOn]         = useState(false);
+  // Selama user belum memilih kamera secara manual, selalu minta kamera
+  // belakang lewat facingMode — lebih andal daripada mengandalkan label
+  // device (label "back/rear" tidak selalu tersedia di semua HP/browser).
+  const [manualCam, setManualCam]     = useState(false);
   const scannerRef   = useRef(null);
   const mountedRef   = useRef(true);
   const pauseTimer   = useRef(null);
@@ -117,22 +121,48 @@ export default function QRScannerCamera({
       const scanner = new Html5Qrcode("absenqr-camera-view", { verbose: false });
       scannerRef.current = scanner;
 
+      // Default: minta kamera belakang via facingMode (tidak bergantung pada
+      // urutan/label device — paling andal untuk mobile). Setelah user
+      // memilih kamera lain secara manual, pakai deviceId spesifik itu.
+      // Catatan: html5-qrcode hanya menerima facingMode berupa string
+      // (diperlakukan browser sebagai constraint "ideal", bukan wajib) atau
+      // objek { exact }. String di sini paling aman — tetap fallback ke
+      // kamera lain bila perangkat cuma punya 1 kamera (mis. laptop/desktop).
+      const cameraTarget = manualCam
+        ? cameras[camIdx].id
+        : { facingMode: "environment" };
+
       await scanner.start(
-        cameras[camIdx].id,
+        cameraTarget,
         {
           fps: 15,
           qrbox: (vw, vh) => {
-            const size = Math.round(Math.min(vw, vh) * 0.7);
+            const size = Math.round(Math.min(vw, vh) * 0.85);
             return { width: size, height: size };
           },
           aspectRatio: 1.0,
           disableFlip: false,
+          // Catatan: sengaja TIDAK memakai config.videoConstraints di sini —
+          // html5-qrcode akan mengabaikan cameraTarget (facingMode) di atas
+          // dan hanya memakai videoConstraints jika field itu diisi. Autofocus
+          // diterapkan lewat applyConstraints() setelah track aktif (di bawah).
         },
         // ✅ Berhasil baca QR
         (decodedText) => { if (mountedRef.current) handleResult(decodedText); },
         // ⚠️ Frame error (normal, abaikan)
         () => {}
       );
+
+      // Paksa continuous autofocus lewat track langsung — sebagian browser
+      // hanya menerima constraint ini setelah track aktif, bukan saat start().
+      try {
+        const caps = scanner.getRunningTrackCapabilities?.();
+        if (caps?.focusMode?.includes?.("continuous")) {
+          await scanner.applyVideoConstraints({ advanced: [{ focusMode: "continuous" }] });
+        }
+      } catch {
+        // Autofocus manual tidak didukung perangkat ini — abaikan, kamera tetap jalan
+      }
 
       if (mountedRef.current) setState(STATE.SCANNING);
     } catch (err) {
@@ -144,7 +174,7 @@ export default function QRScannerCamera({
       setState(STATE.ERROR);
       onScanError?.(msg);
     }
-  }, [cameras, camIdx, onScanError]);
+  }, [cameras, camIdx, manualCam, onScanError]);
 
   // ── Stop kamera ────────────────────────────────────────────────────────────
   const stopCamera = useCallback(async () => {
@@ -166,10 +196,11 @@ export default function QRScannerCamera({
 
   // ── Proses hasil scan ─────────────────────────────────────────────────────
   const handleResult = (rawText) => {
-    // Pause scanner sementara
+    // Pause scanner sementara — param `false` memastikan video tetap jalan
+    // (kamera tidak mati), hanya loop pembacaan QR yang dijeda.
     setState(STATE.PAUSED);
     if (scannerRef.current) {
-      try { scannerRef.current.pause(); } catch {}
+      try { scannerRef.current.pause(false); } catch {}
     }
 
     let data;
@@ -195,7 +226,13 @@ export default function QRScannerCamera({
       if (!mountedRef.current) return;
       setErrorMsg(null);
       if (scannerRef.current) {
-        try { scannerRef.current.resume(); } catch {}
+        try {
+          scannerRef.current.resume();
+        } catch {
+          // resume() gagal (jarang, tergantung browser) — restart penuh
+          // supaya kamera tidak terlihat "mati"/freeze setelah scan.
+          scannerRef.current = null;
+        }
       }
       setState(STATE.SCANNING);
     }, ms);
@@ -205,6 +242,7 @@ export default function QRScannerCamera({
   const switchCamera = async () => {
     if (cameras.length < 2) return;
     await stopCamera();
+    setManualCam(true);
     const next = (camIdx + 1) % cameras.length;
     setCamIdx(next);
     setTimeout(() => { if (mountedRef.current) setState(STATE.SCANNING); }, 300);
@@ -214,13 +252,9 @@ export default function QRScannerCamera({
   const toggleTorch = async () => {
     if (!scannerRef.current?.isScanning) return;
     try {
-      // Akses video track langsung
-      const tracks = scannerRef.current._localMediaStream?.getVideoTracks();
-      if (tracks?.length) {
-        const newVal = !torchOn;
-        await tracks[0].applyConstraints({ advanced: [{ torch: newVal }] });
-        setTorchOn(newVal);
-      }
+      const newVal = !torchOn;
+      await scannerRef.current.applyVideoConstraints({ advanced: [{ torch: newVal }] });
+      setTorchOn(newVal);
     } catch {
       // Torch tidak didukung perangkat ini — silent fail
     }
@@ -248,21 +282,21 @@ export default function QRScannerCamera({
           }}
         />
 
-        {/* Overlay frame sudut */}
+        {/* Overlay frame sudut — ukuran mengikuti proporsi qrbox aktual (85%) */}
         {!isError && (
-          <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
+          <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none z-10">
             <style>{`
-              @keyframes scanBounce{0%,100%{top:8%}50%{top:82%}}
+              @keyframes scanBounce{0%,100%{top:8%}50%{top:92%}}
               .scan-beam{animation:scanBounce 2s ease-in-out infinite;position:absolute;left:0;right:0}
             `}</style>
-            <div className="relative w-56 h-56">
+            <div className="relative" style={{ width: "85%", height: "85%" }}>
               {[
-                "top-0 left-0  border-t-2 border-l-2 rounded-tl-xl",
-                "top-0 right-0 border-t-2 border-r-2 rounded-tr-xl",
-                "bottom-0 left-0  border-b-2 border-l-2 rounded-bl-xl",
-                "bottom-0 right-0 border-b-2 border-r-2 rounded-br-xl",
+                "top-0 left-0  border-t-4 border-l-4 rounded-tl-2xl",
+                "top-0 right-0 border-t-4 border-r-4 rounded-tr-2xl",
+                "bottom-0 left-0  border-b-4 border-l-4 rounded-bl-2xl",
+                "bottom-0 right-0 border-b-4 border-r-4 rounded-br-2xl",
               ].map((cls, i) => (
-                <div key={i} className={`absolute w-8 h-8 border-indigo-400 ${cls}`} />
+                <div key={i} className={`absolute w-10 h-10 border-indigo-400 ${cls}`} />
               ))}
               {isActive && (
                 <div className="scan-beam h-0.5 bg-indigo-400"
@@ -270,6 +304,13 @@ export default function QRScannerCamera({
                 />
               )}
             </div>
+
+            {/* Petunjuk visual */}
+            {isActive && !errorMsg && (
+              <p className="absolute bottom-4 left-1/2 -translate-x-1/2 text-white text-xs font-semibold bg-black/50 backdrop-blur-sm px-3.5 py-1.5 rounded-full whitespace-nowrap">
+                Arahkan QR Code ke dalam kotak
+              </p>
+            )}
           </div>
         )}
 
@@ -375,7 +416,7 @@ export default function QRScannerCamera({
       {cameras.length > 1 && !isActive && !isLoading && (
         <select
           value={camIdx}
-          onChange={e => setCamIdx(Number(e.target.value))}
+          onChange={e => { setManualCam(true); setCamIdx(Number(e.target.value)); }}
           className="w-full text-sm border border-slate-200 rounded-xl px-3 py-2.5 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-400">
           {cameras.map((cam, i) => (
             <option key={cam.id} value={i}>
