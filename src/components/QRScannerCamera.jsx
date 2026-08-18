@@ -2,7 +2,12 @@
  * QRScannerCamera.jsx — Komponen Scanner Kamera Real
  * AbsenQR Production Component
  *
- * INSTALL:  npm install html5-qrcode lucide-react
+ * INSTALL:  npm install jsqr lucide-react
+ *
+ * Pendekatan native: getUserMedia() langsung untuk akses kamera + BarcodeDetector
+ * API bawaan Chrome Android sebagai scanner utama (tanpa library eksternal untuk
+ * decode). Fallback ke jsQR (dimuat dinamis, hanya saat dibutuhkan) di browser
+ * yang belum punya BarcodeDetector (mis. Safari/Firefox desktop, Chrome lama).
  *
  * CARA PAKAI di ScannerPage (AbsenQR.jsx):
  *   import QRScannerCamera from "./QRScannerCamera";
@@ -22,25 +27,27 @@ import {
 // ─── Konstanta state scanner ──────────────────────────────────────────────────
 const STATE = {
   IDLE:     "idle",
-  LOADING:  "loading",  // memuat library & kamera
+  LOADING:  "loading",  // minta izin & buka stream kamera
   SCANNING: "scanning", // kamera aktif & scan berjalan
-  PAUSED:   "paused",   // jeda sementara setelah scan
+  PAUSED:   "paused",   // jeda sementara setelah scan (video tetap jalan)
   ERROR:    "error",
 };
 
-// Deteksi gagal-muat chunk JS (bukan library beneran hilang) — khas terjadi
-// saat tab dibuka sejak sebelum deploy terbaru, sehingga browser masih minta
-// file dengan hash lama yang sudah tidak ada di server setelah redeploy SPA.
-const isModuleLoadError = (err) =>
-  /fetch dynamically imported module|failed to fetch|loading chunk|importing a module script failed/i
-    .test(err?.message || String(err));
-
-// Jeda setelah melepas kamera sebelum minta stream baru. Chrome Android
+// Jeda setelah melepas track kamera sebelum minta stream baru. Chrome Android
 // (dan beberapa browser mobile lain) butuh waktu untuk benar-benar melepas
-// handle hardware kamera ke OS — start() langsung setelah stop() tanpa jeda
-// adalah penyebab umum error "Could not start video source".
+// handle hardware kamera ke OS — request stream baru langsung setelah stop()
+// tanpa jeda adalah penyebab umum error "Could not start video source".
 const CAMERA_RELEASE_DELAY_MS = 500;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Jarak minimum (ms) antar upaya decode. BarcodeDetector.detect() & jsQR
+// keduanya cukup berat untuk dipanggil di setiap frame (~60fps); throttle ke
+// ~10fps sudah lebih dari cukup untuk QR statis dan menghindari jank/flicker
+// pada video akibat main thread sibuk terus-menerus.
+const DETECT_INTERVAL_MS = 100;
+
+const hasBarcodeDetector = () =>
+  typeof window !== "undefined" && "BarcodeDetector" in window;
 
 /**
  * QRScannerCamera
@@ -57,36 +64,47 @@ export default function QRScannerCamera({
   pauseMs   = 1500,
   overlay   = null,
 }) {
-  const [state, setState]             = useState(STATE.IDLE);
-  const [cameras, setCameras]         = useState([]);
-  const [camIdx, setCamIdx]           = useState(0);
-  const [errorMsg, setErrorMsg]       = useState(null);
-  const [torchOn, setTorchOn]         = useState(false);
-  // Selama user belum memilih kamera secara manual, selalu minta kamera
-  // belakang lewat facingMode — lebih andal daripada mengandalkan label
-  // device (label "back/rear" tidak selalu tersedia di semua HP/browser).
-  const [manualCam, setManualCam]     = useState(false);
-  // true jika error disebabkan chunk JS gagal dimuat (mis. tab dibuka sejak
-  // sebelum deploy terbaru, jadi hash file lama sudah tidak ada di server) —
-  // kasus ini butuh reload penuh, bukan retry di dalam state React.
-  const [needsReload, setNeedsReload] = useState(false);
-  const scannerRef   = useRef(null);
-  const mountedRef   = useRef(true);
-  const pauseTimer   = useRef(null);
+  const [state, setState]         = useState(STATE.IDLE);
+  const [cameras, setCameras]     = useState([]);
+  const [camIdx, setCamIdx]       = useState(0);
+  const [errorMsg, setErrorMsg]   = useState(null);
+  const [torchOn, setTorchOn]     = useState(false);
+  const [manualCam, setManualCam] = useState(false);
+
+  const videoRef      = useRef(null);
+  const canvasRef      = useRef(null); // dipakai hanya oleh fallback jsQR
+  const streamRef      = useRef(null);
+  const rafRef          = useRef(null);
+  const detectorRef     = useRef(null); // instance BarcodeDetector
+  const jsQRRef          = useRef(null); // fungsi jsQR (dimuat dinamis, lazy)
+  const detectBusyRef    = useRef(false); // guard: cegah detect() tumpang tindih
+  const lastDetectAtRef  = useRef(0);
+  const pausedRef        = useRef(false); // skip decode tanpa hentikan video (no flicker)
+  const mountedRef       = useRef(true);
+  const pauseTimer       = useRef(null);
   // Ref (bukan state) — perlu bisa dibaca/ditulis secara sinkron agar benar-
   // benar mencegah 2 pemanggilan startCamera() berjalan bersamaan (mis. efek
   // re-run + klik tombol di tick yang sama). State React tidak cukup cepat
   // untuk guard reentrancy semacam ini karena update-nya async/batched.
   const isStartingRef = useRef(false);
 
-  // ── Lepas instance scanner & stream kamera yang berjalan (best-effort) ─────
-  const releaseScanner = useCallback(async () => {
-    const scanner = scannerRef.current;
-    scannerRef.current = null;
-    if (!scanner) return;
-    try { await scanner.stop(); } catch {}
-    try { scanner.clear(); }       catch {}
+  // ── Hentikan loop rAF ──────────────────────────────────────────────────────
+  const stopLoop = useCallback(() => {
+    if (rafRef.current) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
   }, []);
+
+  // ── Lepas stream kamera yang berjalan (best-effort) ─────────────────────────
+  const releaseStream = useCallback(async () => {
+    stopLoop();
+    const stream = streamRef.current;
+    streamRef.current = null;
+    if (videoRef.current) videoRef.current.srcObject = null;
+    if (!stream) return;
+    stream.getTracks().forEach(t => { try { t.stop(); } catch {} });
+  }, [stopLoop]);
 
   // ── Cleanup saat unmount ───────────────────────────────────────────────────
   useEffect(() => {
@@ -94,180 +112,17 @@ export default function QRScannerCamera({
     return () => {
       mountedRef.current = false;
       clearTimeout(pauseTimer.current);
-      if (scannerRef.current) {
-        scannerRef.current.stop().catch(() => {});
-      }
+      stopLoop();
+      streamRef.current?.getTracks().forEach(t => { try { t.stop(); } catch {} });
     };
-  }, []);
-
-  // ── Deteksi kamera yang tersedia ──────────────────────────────────────────
-  useEffect(() => {
-    setState(STATE.LOADING);
-    import("html5-qrcode").then(({ Html5Qrcode }) => {
-      Html5Qrcode.getCameras()
-        .then(devices => {
-          if (!mountedRef.current) return;
-          if (!devices?.length) {
-            setErrorMsg("Tidak ada kamera terdeteksi di perangkat ini.");
-            setState(STATE.ERROR);
-            return;
-          }
-          setCameras(devices);
-          // Utamakan kamera belakang untuk mobile
-          const backIdx = devices.findIndex(d => /back|rear|environment/i.test(d.label));
-          setCamIdx(backIdx >= 0 ? backIdx : 0);
-          if (autoStart) setState(STATE.SCANNING);
-          else           setState(STATE.IDLE);
-        })
-        .catch(err => {
-          if (!mountedRef.current) return;
-          const msg = /NotAllowed|Permission/i.test(err.message)
-            ? "Izin kamera ditolak. Buka pengaturan browser → Izinkan akses kamera untuk situs ini."
-            : "Gagal mendeteksi kamera: " + err.message;
-          setErrorMsg(msg);
-          setState(STATE.ERROR);
-          onScanError?.(msg);
-        });
-    }).catch((err) => {
-      if (!mountedRef.current) return;
-      console.error("[QRScannerCamera] Gagal memuat modul html5-qrcode:", err);
-      if (isModuleLoadError(err)) {
-        setNeedsReload(true);
-        setErrorMsg("Gagal memuat modul pemindai QR. Ini biasanya terjadi setelah aplikasi baru saja diperbarui — muat ulang halaman untuk mengambil versi terbaru.");
-      } else {
-        setErrorMsg("Library html5-qrcode belum terinstall. Jalankan: npm install html5-qrcode");
-      }
-      setState(STATE.ERROR);
-    });
-  }, [autoStart, onScanError]);
-
-  // ── Start kamera ───────────────────────────────────────────────────────────
-  const startCamera = useCallback(async () => {
-    // Cegah double-start: kalau ada proses start yang masih berjalan (mis.
-    // efek re-run sementara startCamera sebelumnya belum selesai), jangan
-    // mulai lagi — dua panggilan .start() bersamaan di html5-qrcode adalah
-    // penyebab umum "Could not start video source" di Android.
-    if (isStartingRef.current || !cameras.length || !mountedRef.current) return;
-    isStartingRef.current = true;
-    setState(STATE.LOADING);
-    setErrorMsg(null);
-
-    let scanner = null;
-    try {
-      const { Html5Qrcode } = await import("html5-qrcode");
-
-      // Pastikan instance & stream kamera lama benar-benar dilepas, lalu beri
-      // jeda ke OS sebelum minta stream baru (lihat CAMERA_RELEASE_DELAY_MS).
-      if (scannerRef.current) {
-        await releaseScanner();
-        await sleep(CAMERA_RELEASE_DELAY_MS);
-        if (!mountedRef.current) return;
-      }
-
-      scanner = new Html5Qrcode("absenqr-camera-view", { verbose: false });
-
-      // Default: minta kamera belakang via facingMode (tidak bergantung pada
-      // urutan/label device — paling andal untuk mobile). Setelah user
-      // memilih kamera lain secara manual, pakai deviceId spesifik itu.
-      // Catatan: html5-qrcode hanya menerima facingMode berupa string
-      // (diperlakukan browser sebagai constraint "ideal", bukan wajib) atau
-      // objek { exact }. String di sini paling aman — tetap fallback ke
-      // kamera lain bila perangkat cuma punya 1 kamera (mis. laptop/desktop).
-      const cameraTarget = manualCam
-        ? cameras[camIdx].id
-        : { facingMode: "environment" };
-
-      await scanner.start(
-        cameraTarget,
-        {
-          fps: 15,
-          qrbox: (vw, vh) => {
-            const size = Math.round(Math.min(vw, vh) * 0.85);
-            return { width: size, height: size };
-          },
-          aspectRatio: 1.0,
-          disableFlip: false,
-          // Catatan: sengaja TIDAK memakai config.videoConstraints di sini —
-          // html5-qrcode akan mengabaikan cameraTarget (facingMode) di atas
-          // dan hanya memakai videoConstraints jika field itu diisi. Autofocus
-          // diterapkan lewat applyConstraints() setelah track aktif (di bawah).
-        },
-        // ✅ Berhasil baca QR
-        (decodedText) => { if (mountedRef.current) handleResult(decodedText); },
-        // ⚠️ Frame error (normal, abaikan)
-        () => {}
-      );
-
-      // Baru simpan ke ref SETELAH start() sukses. Kalau disimpan lebih awal
-      // dan start() gagal, instance yang belum pernah scanning itu nyangkut
-      // di ref — .stop() padanya selalu throw ("not scanning"), jadi stream
-      // yang mungkin sudah diminta browser tidak pernah dilepas, dan
-      // percobaan berikutnya gagal lagi dengan "Could not start video source".
-      scannerRef.current = scanner;
-
-      // Paksa continuous autofocus lewat track langsung — sebagian browser
-      // hanya menerima constraint ini setelah track aktif, bukan saat start().
-      try {
-        const caps = scanner.getRunningTrackCapabilities?.();
-        if (caps?.focusMode?.includes?.("continuous")) {
-          await scanner.applyVideoConstraints({ advanced: [{ focusMode: "continuous" }] });
-        }
-      } catch {
-        // Autofocus manual tidak didukung perangkat ini — abaikan, kamera tetap jalan
-      }
-
-      if (mountedRef.current) setState(STATE.SCANNING);
-    } catch (err) {
-      // Best-effort: instance yang gagal start tidak pernah masuk stateManager
-      // "scanning" jadi .stop() normalnya throw, tapi tetap dicoba jaga-jaga
-      // kalau browser sempat memberi sebagian track sebelum start() gagal.
-      if (scanner) {
-        try { await scanner.stop(); } catch {}
-        try { scanner.clear(); }       catch {}
-      }
-      if (!mountedRef.current) return;
-      console.error("[QRScannerCamera] Gagal memulai kamera:", err);
-      let msg;
-      if (isModuleLoadError(err)) {
-        setNeedsReload(true);
-        msg = "Gagal memuat modul pemindai QR. Ini biasanya terjadi setelah aplikasi baru saja diperbarui — muat ulang halaman untuk mengambil versi terbaru.";
-      } else if (/NotAllowed|Permission/i.test(err.message)) {
-        msg = "Akses kamera ditolak. Izinkan kamera di pengaturan browser lalu coba lagi.";
-      } else if (/Could not start video source/i.test(err.message || "")) {
-        msg = "Kamera sedang dipakai proses lain atau belum sempat dilepas. Tunggu sebentar lalu coba lagi.";
-      } else {
-        msg = "Gagal memulai kamera: " + (err.message || err);
-      }
-      setErrorMsg(msg);
-      setState(STATE.ERROR);
-      onScanError?.(msg);
-    } finally {
-      isStartingRef.current = false;
-    }
-  }, [cameras, camIdx, manualCam, onScanError, releaseScanner]);
-
-  // ── Stop kamera ────────────────────────────────────────────────────────────
-  const stopCamera = useCallback(async () => {
-    clearTimeout(pauseTimer.current);
-    await releaseScanner();
-    if (mountedRef.current) setState(STATE.IDLE);
-  }, [releaseScanner]);
-
-  // ── Efek: mulai kamera ketika state berubah ke SCANNING ───────────────────
-  useEffect(() => {
-    if (state === STATE.SCANNING && !scannerRef.current) {
-      startCamera();
-    }
-  }, [state, startCamera]);
+  }, [stopLoop]);
 
   // ── Proses hasil scan ─────────────────────────────────────────────────────
-  const handleResult = (rawText) => {
-    // Pause scanner sementara — param `false` memastikan video tetap jalan
-    // (kamera tidak mati), hanya loop pembacaan QR yang dijeda.
+  const handleResult = useCallback((rawText) => {
+    // Jeda decode sementara — video TIDAK dihentikan, hanya loop pembacaan QR
+    // yang dijeda (pausedRef), supaya tidak ada flicker/black-frame di preview.
+    pausedRef.current = true;
     setState(STATE.PAUSED);
-    if (scannerRef.current) {
-      try { scannerRef.current.pause(false); } catch {}
-    }
 
     let data;
     try {
@@ -280,72 +135,228 @@ export default function QRScannerCamera({
       return;
     }
 
-    // ✅ Data valid → kirim ke parent (kehadiran dicatat ke event yang sedang aktif di scanner)
     setErrorMsg(null);
     onScanSuccess(data);
     resumeAfterDelay(pauseMs);
-  };
+  }, [onScanSuccess, onScanError, pauseMs]);
 
-  // Resume scanning setelah jeda
+  // Resume decode setelah jeda (video sudah tetap jalan selama ini)
   const resumeAfterDelay = (ms) => {
-    pauseTimer.current = setTimeout(async () => {
+    pauseTimer.current = setTimeout(() => {
       if (!mountedRef.current) return;
       setErrorMsg(null);
-      if (scannerRef.current) {
-        try {
-          scannerRef.current.resume();
-          setState(STATE.SCANNING);
-          return;
-        } catch {
-          // resume() gagal (jarang, tergantung browser) — restart penuh.
-          // Lepas instance lama dengan benar (stop+clear) dan beri jeda
-          // sebelum start baru — jangan langsung null-kan ref begitu saja,
-          // itu bikin stream lama bocor dan start berikutnya gagal dengan
-          // "Could not start video source".
-          await releaseScanner();
-          await sleep(CAMERA_RELEASE_DELAY_MS);
-        }
-      }
-      if (mountedRef.current) setState(STATE.SCANNING);
+      pausedRef.current = false;
+      if (streamRef.current) setState(STATE.SCANNING);
     }, ms);
   };
+
+  // ── Loop scanning (requestAnimationFrame) ───────────────────────────────────
+  const tick = useCallback((ts) => {
+    if (!mountedRef.current || !streamRef.current) return;
+    const video = videoRef.current;
+
+    const shouldDecode =
+      !pausedRef.current &&
+      video && video.readyState >= 2 /* HAVE_CURRENT_DATA */ &&
+      !detectBusyRef.current &&
+      ts - lastDetectAtRef.current >= DETECT_INTERVAL_MS;
+
+    if (shouldDecode) {
+      lastDetectAtRef.current = ts;
+      detectBusyRef.current = true;
+
+      const finish = () => { detectBusyRef.current = false; };
+
+      if (detectorRef.current) {
+        detectorRef.current.detect(video)
+          .then(codes => {
+            if (codes?.length && mountedRef.current && !pausedRef.current) {
+              handleResult(codes[0].rawValue);
+            }
+          })
+          .catch(() => {}) // frame sesaat tidak valid untuk detect — abaikan, coba lagi frame berikutnya
+          .finally(finish);
+      } else if (jsQRRef.current) {
+        const canvas = canvasRef.current;
+        const vw = video.videoWidth, vh = video.videoHeight;
+        if (vw && vh) {
+          if (canvas.width !== vw || canvas.height !== vh) {
+            canvas.width = vw;
+            canvas.height = vh;
+          }
+          const ctx = canvas.getContext("2d", { willReadFrequently: true });
+          ctx.drawImage(video, 0, 0, vw, vh);
+          try {
+            const imgData = ctx.getImageData(0, 0, vw, vh);
+            const result = jsQRRef.current(imgData.data, vw, vh, { inversionAttempts: "dontInvert" });
+            if (result?.data && mountedRef.current && !pausedRef.current) {
+              handleResult(result.data);
+            }
+          } catch {}
+        }
+        finish();
+      } else {
+        finish();
+      }
+    }
+
+    rafRef.current = requestAnimationFrame(tick);
+  }, [handleResult]);
+
+  // ── Terapkan autofocus kontinu (best-effort, tidak semua device dukung) ────
+  const applyContinuousFocus = async (track) => {
+    try {
+      const caps = track.getCapabilities?.();
+      if (caps?.focusMode?.includes?.("continuous")) {
+        await track.applyConstraints({ advanced: [{ focusMode: "continuous" }] });
+      }
+    } catch {
+      // Autofocus manual tidak didukung perangkat ini — abaikan, kamera tetap jalan
+    }
+  };
+
+  // ── Start kamera ───────────────────────────────────────────────────────────
+  const startCamera = useCallback(async (targetIdx = camIdx, useManual = manualCam) => {
+    // Cegah double-start: dua permintaan getUserMedia() bersamaan di Android
+    // adalah penyebab umum "Could not start video source".
+    if (isStartingRef.current || !mountedRef.current) return;
+    isStartingRef.current = true;
+    setState(STATE.LOADING);
+    setErrorMsg(null);
+
+    try {
+      // Pastikan stream lama benar-benar dilepas, lalu beri jeda ke OS sebelum
+      // minta stream baru (lihat CAMERA_RELEASE_DELAY_MS).
+      if (streamRef.current) {
+        await releaseStream();
+        await sleep(CAMERA_RELEASE_DELAY_MS);
+        if (!mountedRef.current) return;
+      }
+
+      // Default: minta kamera belakang via facingMode (tidak bergantung pada
+      // urutan/label device — paling andal untuk mobile). Setelah user
+      // memilih kamera lain secara manual, pakai deviceId spesifik itu.
+      const videoConstraints = useManual && cameras[targetIdx]
+        ? { deviceId: { exact: cameras[targetIdx].deviceId } }
+        : { facingMode: { ideal: "environment" } };
+
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: { ...videoConstraints, width: { ideal: 1280 }, height: { ideal: 1280 } },
+      });
+      if (!mountedRef.current) { stream.getTracks().forEach(t => t.stop()); return; }
+
+      streamRef.current = stream;
+      const video = videoRef.current;
+      video.srcObject = stream;
+      await video.play();
+
+      const track = stream.getVideoTracks()[0];
+      await applyContinuousFocus(track);
+
+      // Susun ulang daftar kamera (label baru tersedia setelah izin diberikan)
+      // hanya sekali — supaya dropdown & tombol switch-camera bisa dipakai.
+      if (!cameras.length) {
+        try {
+          const devices = await navigator.mediaDevices.enumerateDevices();
+          const vids = devices.filter(d => d.kind === "videoinput");
+          if (vids.length) {
+            setCameras(vids);
+            const activeId = track.getSettings?.().deviceId;
+            const idx = vids.findIndex(d => d.deviceId === activeId);
+            setCamIdx(idx >= 0 ? idx : 0);
+          }
+        } catch {
+          // enumerateDevices gagal — tidak fatal, hanya tombol ganti kamera yang tidak muncul
+        }
+      }
+
+      // Siapkan mesin decode: BarcodeDetector (native) bila tersedia, kalau
+      // tidak fallback ke jsQR (lazy-loaded, hanya diunduh saat dibutuhkan).
+      if (!detectorRef.current && !jsQRRef.current) {
+        if (hasBarcodeDetector()) {
+          try {
+            const formats = await window.BarcodeDetector.getSupportedFormats();
+            if (formats.includes("qr_code")) {
+              detectorRef.current = new window.BarcodeDetector({ formats: ["qr_code"] });
+            }
+          } catch {
+            // getSupportedFormats gagal — anggap tidak didukung, pakai fallback
+          }
+        }
+        if (!detectorRef.current) {
+          const mod = await import("jsqr");
+          jsQRRef.current = mod.default;
+        }
+      }
+
+      pausedRef.current = false;
+      lastDetectAtRef.current = 0;
+      if (mountedRef.current) {
+        setState(STATE.SCANNING);
+        rafRef.current = requestAnimationFrame(tick);
+      }
+    } catch (err) {
+      streamRef.current?.getTracks().forEach(t => { try { t.stop(); } catch {} });
+      streamRef.current = null;
+      if (!mountedRef.current) return;
+      console.error("[QRScannerCamera] Gagal memulai kamera:", err);
+      let msg;
+      const name = err?.name || "";
+      if (name === "NotAllowedError" || name === "PermissionDeniedError") {
+        msg = "Akses kamera ditolak. Izinkan kamera di pengaturan browser lalu coba lagi.";
+      } else if (name === "NotFoundError" || name === "DevicesNotFoundError") {
+        msg = "Tidak ada kamera terdeteksi di perangkat ini.";
+      } else if (name === "NotReadableError" || name === "TrackStartError") {
+        msg = "Kamera sedang dipakai proses lain atau belum sempat dilepas. Tunggu sebentar lalu coba lagi.";
+      } else if (name === "OverconstrainedError" || name === "ConstraintNotSatisfiedError") {
+        msg = "Kamera yang dipilih tidak didukung. Coba kamera lain.";
+      } else {
+        msg = "Gagal memulai kamera: " + (err.message || err);
+      }
+      setErrorMsg(msg);
+      setState(STATE.ERROR);
+      onScanError?.(msg);
+    } finally {
+      isStartingRef.current = false;
+    }
+  }, [cameras, camIdx, manualCam, onScanError, releaseStream, tick]);
+
+  // ── Stop kamera ────────────────────────────────────────────────────────────
+  const stopCamera = useCallback(async () => {
+    clearTimeout(pauseTimer.current);
+    await releaseStream();
+    if (mountedRef.current) setState(STATE.IDLE);
+  }, [releaseStream]);
+
+  // ── Autostart saat mount ────────────────────────────────────────────────────
+  useEffect(() => {
+    if (autoStart) startCamera(0, false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // ── Switch kamera (depan/belakang) ────────────────────────────────────────
   const switchCamera = async () => {
     if (cameras.length < 2 || isStartingRef.current) return;
-    await stopCamera(); // sudah termasuk releaseScanner (stop+clear)
-    setManualCam(true);
     const next = (camIdx + 1) % cameras.length;
+    setManualCam(true);
     setCamIdx(next);
-    // Beri jeda ke OS sebelum minta kamera baru — lihat CAMERA_RELEASE_DELAY_MS.
-    await sleep(CAMERA_RELEASE_DELAY_MS);
-    if (mountedRef.current) setState(STATE.SCANNING);
+    await startCamera(next, true);
   };
 
   // ── Mulai / coba lagi setelah error ────────────────────────────────────────
   const handleStartClick = async () => {
-    if (needsReload) { window.location.reload(); return; }
     if (isStartingRef.current) return;
-    if (state === STATE.ERROR) {
-      // Retry harus tunggu cleanup selesai dulu, bukan langsung lompat ke
-      // SCANNING — instance sebelumnya (kalau ada sisa) perlu waktu dilepas
-      // supaya tidak langsung tabrakan dengan permintaan kamera yang baru.
-      setErrorMsg(null);
-      setState(STATE.LOADING);
-      await releaseScanner();
-      await sleep(CAMERA_RELEASE_DELAY_MS);
-      if (mountedRef.current) setState(STATE.SCANNING);
-    } else {
-      setState(STATE.SCANNING);
-    }
+    await startCamera(camIdx, manualCam);
   };
 
   // ── Toggle flash/torch ─────────────────────────────────────────────────────
   const toggleTorch = async () => {
-    if (!scannerRef.current?.isScanning) return;
+    const track = streamRef.current?.getVideoTracks?.()[0];
+    if (!track) return;
     try {
       const newVal = !torchOn;
-      await scannerRef.current.applyVideoConstraints({ advanced: [{ torch: newVal }] });
+      await track.applyConstraints({ advanced: [{ torch: newVal }] });
       setTorchOn(newVal);
     } catch {
       // Torch tidak didukung perangkat ini — silent fail
@@ -365,16 +376,18 @@ export default function QRScannerCamera({
         className="relative bg-slate-900 rounded-3xl overflow-hidden"
         style={{ aspectRatio: "1/1", minHeight: 280 }}
       >
-        {/* html5-qrcode mounts its own video element di sini */}
-        <div
-          id="absenqr-camera-view"
-          style={{
-            position: "absolute", inset: 0, width: "100%", height: "100%",
-            // Override style bawaan html5-qrcode agar full
-          }}
+        <video
+          ref={videoRef}
+          playsInline
+          muted
+          autoPlay
+          className="absolute inset-0 w-full h-full object-cover"
+          style={{ display: isActive ? "block" : "none" }}
         />
+        {/* Canvas offscreen — hanya dipakai fallback jsQR untuk decode, tidak ditampilkan */}
+        <canvas ref={canvasRef} style={{ display: "none" }} />
 
-        {/* Overlay frame sudut — ukuran mengikuti proporsi qrbox aktual (85%) */}
+        {/* Overlay frame sudut — ukuran mengikuti proporsi kotak scan (85%) */}
         {!isError && (
           <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none z-10">
             <style>{`
@@ -434,7 +447,7 @@ export default function QRScannerCamera({
             <button
               onClick={handleStartClick}
               className="mt-4 flex items-center gap-2 bg-indigo-600 text-white text-sm font-bold px-5 py-2.5 rounded-2xl hover:bg-indigo-500 transition-colors">
-              <RefreshCw size={15} /> {needsReload ? "Muat Ulang Halaman" : "Coba Lagi"}
+              <RefreshCw size={15} /> Coba Lagi
             </button>
           </div>
         )}
@@ -507,7 +520,7 @@ export default function QRScannerCamera({
           onChange={e => { setManualCam(true); setCamIdx(Number(e.target.value)); }}
           className="w-full text-sm border border-slate-200 rounded-xl px-3 py-2.5 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-400">
           {cameras.map((cam, i) => (
-            <option key={cam.id} value={i}>
+            <option key={cam.deviceId} value={i}>
               {cam.label || `Kamera ${i + 1}`}
             </option>
           ))}
