@@ -11,6 +11,8 @@ import QRScannerCamera from "./components/QRScannerCamera";
 import { getAPI } from "./utils/sheetsAPI";
 import { useGoogleLogin, googleLogout } from "@react-oauth/google";
 
+const USER_STORAGE_KEY = "absenqr_user";
+
 const initialsOf = (name, email) => {
   const src = (name || email || "?").trim();
   const parts = src.split(/\s+/).filter(Boolean);
@@ -895,7 +897,14 @@ function ErrorScreen({ message, onRetry }) {
 }
 
 export default function App() {
-  const [user, setUser]               = useState(null);
+  const [user, setUser]               = useState(() => {
+    try {
+      const saved = localStorage.getItem(USER_STORAGE_KEY);
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
   const [page, setPage]               = useState("dashboard");
   const [selEvent, setSelEvent]       = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -958,7 +967,18 @@ export default function App() {
     return () => { cancelled = true; clearInterval(id); };
   }, [user, loading, loadError]);
 
-  if (!user)     return <LoginPage onLogin={setUser}/>;
+  const handleLogin = (profile) => {
+    setUser(profile);
+    try { localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(profile)); } catch { /* localStorage tidak tersedia (mis. private mode) — sesi cukup bertahan di memori */ }
+  };
+
+  const handleLogout = () => {
+    googleLogout();
+    setUser(null);
+    try { localStorage.removeItem(USER_STORAGE_KEY); } catch { /* no-op */ }
+  };
+
+  if (!user)     return <LoginPage onLogin={handleLogin}/>;
   if (loading)   return <LoadingScreen/>;
   if (loadError) return <ErrorScreen message={loadError} onRetry={loadAll}/>;
 
@@ -983,7 +1003,7 @@ export default function App() {
         page={page}
         setPage={p => { setPage(p); setSidebarOpen(false); }}
         user={user}
-        onLogout={() => { googleLogout(); setUser(null); }}
+        onLogout={handleLogout}
         open={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
       />
