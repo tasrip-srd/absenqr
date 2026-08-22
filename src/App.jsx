@@ -197,7 +197,7 @@ function DashboardPage({ events, participants, attendance, setPage, setSelEvent 
   const aP = participants; // peserta bersifat global — semua peserta berpotensi hadir di event manapun
   const aA = attendance.filter(a=>a.eventId===active?.id);
   const pct = aP.length ? Math.round((aA.length/aP.length)*100) : 0;
-  const recent = [...attendance].sort((a,b)=>b.waktuScan.localeCompare(a.waktuScan)).slice(0,5);
+  const recent = [...attendance].sort((a,b)=>(b.waktuScan||"").localeCompare(a.waktuScan||"")).slice(0,5);
   return (
     <div className="p-6 space-y-6 max-w-full">
       <div><h1 className="text-xl font-black text-slate-900">Dashboard</h1><p className="text-slate-500 text-sm mt-0.5">Selamat datang, pantau aktivitas absensi Anda</p></div>
