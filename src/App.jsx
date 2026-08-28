@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   Menu, QrCode, Users, Calendar, BarChart3, LogOut, Plus, Search,
   Printer, CheckCircle, AlertCircle, Home, ScanLine, Download,
@@ -597,26 +597,39 @@ function ScannerPage({ participants, events, attendance, setAttendance, selEvent
   const scanned = new Set(evA.map(a=>a.participantId));
   const pct = evP.length ? Math.round((evA.length/evP.length)*100) : 0;
 
-  const doScan = async (pid) => {
-    if (busy) return;
-    if (!evId) { playErrorSound(); setResult({type:"error",p:null,message:"Belum ada event dipilih. Buat/pilih event dulu."}); setTimeout(()=>setResult(null),2800); return; }
-    // Peserta dicari lintas semua event — QR Code bersifat generik dan bisa dipakai di event manapun
-    const p = participants.find(x=>x.id===String(pid).toUpperCase());
-    if (!p)               { playErrorSound();     setResult({type:"notfound",p:null}); setTimeout(()=>setResult(null),2800); return; }
-    if (scanned.has(p.id)){ playDuplicateSound();  setResult({type:"duplicate",p});     setTimeout(()=>setResult(null),2800); return; }
+  // Kamera (QRScannerCamera) memulai loop scan sekali saat mount dan memanggil
+  // onScanSuccess lewat closure yang "beku" di render pertama itu (loop
+  // requestAnimationFrame tidak dibuat ulang tiap render agar kamera tidak
+  // restart/flicker). Kalau doScan langsung membaca evId/participants/scanned
+  // dari closure, hasil scan kamera akan selalu tercatat ke event yang aktif
+  // saat kamera pertama nyala, walau dropdown event sudah diganti setelahnya.
+  // Refnya selalu diperbarui tiap render supaya closure lama tetap baca nilai terbaru.
+  const latestRef = useRef({});
+  latestRef.current = { evId, participants, scanned, busy };
 
+  const doScan = async (pid) => {
+    const cur = latestRef.current;
+    if (cur.busy) return;
+    if (!cur.evId) { playErrorSound(); setResult({type:"error",p:null,message:"Belum ada event dipilih. Buat/pilih event dulu."}); setTimeout(()=>setResult(null),2800); return; }
+    // Peserta dicari lintas semua event — QR Code bersifat generik dan bisa dipakai di event manapun
+    const p = cur.participants.find(x=>x.id===String(pid).toUpperCase());
+    if (!p)                   { playErrorSound();     setResult({type:"notfound",p:null}); setTimeout(()=>setResult(null),2800); return; }
+    if (cur.scanned.has(p.id)){ playDuplicateSound();  setResult({type:"duplicate",p});     setTimeout(()=>setResult(null),2800); return; }
+
+    const targetEvId = cur.evId;
     setBusy(true);
+    latestRef.current.busy = true; // setState async — set langsung juga supaya guard efektif untuk pemanggilan berikutnya dari closure beku
     try {
       const api = getAPI();
       const res = await api.recordAttendance(
         { id:p.id, namaAnak:p.namaAnak, namaOrtu:p.namaOrtu, kelas:p.kelas, korlas:p.korlas, divisi:p.divisi, hp:p.hp },
-        evId
+        targetEvId
       );
       if (res.duplicate) {
         playDuplicateSound();
         setResult({type:"duplicate",p});
       } else {
-        setAttendance(prev=>[...prev,{participantId:p.id,eventId:evId,waktuScan:res.waktuScan||new Date().toISOString()}]);
+        setAttendance(prev=>[...prev,{participantId:p.id,eventId:targetEvId,waktuScan:res.waktuScan||new Date().toISOString()}]);
         playSuccessSound();
         setResult({type:"success",p});
       }
@@ -625,6 +638,7 @@ function ScannerPage({ participants, events, attendance, setAttendance, selEvent
       setResult({type:"error",p,message:err.message});
     } finally {
       setBusy(false);
+      latestRef.current.busy = false;
       setTimeout(()=>setResult(null),2800);
     }
   };
