@@ -652,7 +652,7 @@ function ScannerPage({ participants, events, attendance, setAttendance, selEvent
         playDuplicateSound();
         setResult({type:"duplicate",p});
       } else {
-        setAttendance(prev=>[...prev,{participantId:p.id,eventId:targetEvId,waktuScan:res.waktuScan||new Date().toISOString()}]);
+        setAttendance(prev=>[...prev,{participantId:p.id,eventId:targetEvId,waktuScan:res.waktuScan||res.waktu_scan||new Date().toISOString()}]);
         playSuccessSound();
         setResult({type:"success",p});
       }

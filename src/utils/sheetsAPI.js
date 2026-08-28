@@ -102,9 +102,26 @@ export class SheetsAPI {
   }
 
   // ── Ambil data kehadiran ────────────────────────────────────────────────
+  // Backend (Apps Script) membalas record attendance dengan field snake_case
+  // (participant_id, event_id, waktu_scan, dst) — sedangkan seluruh App.jsx
+  // membaca camelCase (participantId, eventId, waktuScan). Tanpa normalisasi
+  // di sini, semua filter by eventId/participantId di frontend selalu gagal
+  // match (selalu undefined) sehingga Dashboard/Event/Laporan tampil 0 walau
+  // datanya sudah tersimpan benar di sheet.
   async getAttendance(eventId) {
     const data = await request(this.url, { action: "getAttendance", eventId });
-    return { attendance: data.attendance || [], total: data.total || 0 };
+    const attendance = (data.attendance || []).map(a => ({
+      participantId: a.participantId ?? a.participant_id,
+      eventId:       a.eventId       ?? a.event_id,
+      namaAnak:      a.namaAnak      ?? a.nama_anak,
+      namaOrtu:      a.namaOrtu      ?? a.nama_ortu,
+      kelas:         a.kelas,
+      korlas:        a.korlas,
+      divisi:        a.divisi,
+      hp:            a.hp,
+      waktuScan:     a.waktuScan     ?? a.waktu_scan,
+    }));
+    return { attendance, total: data.total || 0 };
   }
 
   // ── Ambil statistik kehadiran ───────────────────────────────────────────
