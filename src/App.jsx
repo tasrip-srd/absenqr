@@ -265,6 +265,7 @@ function EventsPage({ events, participants, attendance, setPage, setSelEvent, re
   const [form, setForm]           = useState({ name:"", date:"", location:"" });
   const [creating, setCreating]   = useState(false);
   const [createErr, setCreateErr] = useState("");
+  const [statusBusyId, setStatusBusyId] = useState("");
 
   const handleCreate = async () => {
     if (!form.name.trim()) return alert("Nama event wajib diisi");
@@ -280,6 +281,22 @@ function EventsPage({ events, participants, attendance, setPage, setSelEvent, re
       setCreateErr(err.message);
     } finally {
       setCreating(false);
+    }
+  };
+
+  // Dashboard hanya menghitung KPI dari event berstatus "active" — tanpa tombol ini
+  // event baru selamanya tersangkut di "upcoming" (default backend) dan tidak akan
+  // pernah muncul di Dashboard meski absensinya sudah tercatat.
+  const handleSetActive = async (ev) => {
+    setStatusBusyId(ev.id);
+    try {
+      const api = getAPI();
+      await api.updateEventStatus(ev.id, "active");
+      await reload();
+    } catch (err) {
+      alert("Gagal mengaktifkan event: " + err.message);
+    } finally {
+      setStatusBusyId("");
     }
   };
 
@@ -343,6 +360,12 @@ function EventsPage({ events, participants, attendance, setPage, setSelEvent, re
                   </div>
                 </div>
                 <div className="flex flex-col gap-2 flex-shrink-0">
+                  {ev.status!=="active" && ev.status!=="completed" && (
+                    <button onClick={()=>handleSetActive(ev)} disabled={statusBusyId===ev.id}
+                      className="text-xs bg-emerald-600 text-white px-3 py-1.5 rounded-xl hover:bg-emerald-700 disabled:opacity-50 flex items-center gap-1.5 font-bold">
+                      <Activity size={12}/>{statusBusyId===ev.id ? "Mengaktifkan..." : "Jadikan Aktif"}
+                    </button>
+                  )}
                   {ev.status==="active" && <button onClick={()=>{setSelEvent(ev.id);setPage("scanner");}} className="text-xs bg-indigo-600 text-white px-3 py-1.5 rounded-xl hover:bg-indigo-700 flex items-center gap-1.5 font-bold"><ScanLine size={12}/>Scan</button>}
                   <button onClick={()=>{setSelEvent(ev.id);setPage("participants");}} className="text-xs border border-slate-200 text-slate-600 px-3 py-1.5 rounded-xl hover:bg-slate-50 flex items-center gap-1.5"><Users size={12}/>Peserta</button>
                   <button onClick={()=>{setSelEvent(ev.id);setPage("id-cards");}} className="text-xs border border-slate-200 text-slate-600 px-3 py-1.5 rounded-xl hover:bg-slate-50 flex items-center gap-1.5"><QrCode size={12}/>ID Card</button>
